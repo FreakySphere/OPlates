@@ -58,8 +58,15 @@ jobs:
         run: |
           set -euo pipefail
           archive="OPlates-${GITHUB_REF_NAME}.zip"
-          gh release create "$GITHUB_REF_NAME" \
-            "$archive" "$archive.sha256" \
-            --title "OPlates ${GITHUB_REF_NAME}" \
-            --generate-notes \
-            --verify-tag
+          # The tag can arrive with the release already published (created by hand in the web UI),
+          # in which case "gh release create" fails with "already exists". Attach the assets instead.
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            echo "Release $GITHUB_REF_NAME already exists; uploading assets."
+            gh release upload "$GITHUB_REF_NAME" "$archive" "$archive.sha256" --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" \
+              "$archive" "$archive.sha256" \
+              --title "OPlates ${GITHUB_REF_NAME}" \
+              --generate-notes \
+              --verify-tag
+          fi
