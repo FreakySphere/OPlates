@@ -1,0 +1,9 @@
+# Default owner for all project files and reviews.
+* @FreakySphere
+
+# Protected identity and support material.
+/LICENSE @FreakySphere
+/OPlates/OPlates.toc @FreakySphere
+/OPlates/Art/Logo.blp @FreakySphere
+/OPlates/Art/SupportQR.tga @FreakySphere
+/OPlates/UI/Support.lua @FreakySphere

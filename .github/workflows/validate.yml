@@ -1,0 +1,91 @@
+name: Validate
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  addon:
+    name: Addon and repository checks
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Install Lua 5.1
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes lua5.1
+
+      - name: Check Lua 5.1 syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          find OPlates -type f -name '*.lua' -not -path 'OPlates/Libs/*' -print0 \
+            | xargs -0 -n1 luac5.1 -p
+
+      - name: Test awesome_wotlk compatibility
+        run: lua5.1 tests/awesome_wotlk_compat.lua
+
+      - name: Check release metadata and protected identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          tr -d '\r' < OPlates/OPlates.toc | sed '1s/^\xEF\xBB\xBF//' > /tmp/OPlates.toc
+          grep -Fqx '## Interface: 30300' /tmp/OPlates.toc
+          grep -Fqx '## Author: FreakySphere' /tmp/OPlates.toc
+          grep -Eq '^## Version: [0-9]+\.[0-9]+-WotLK$' /tmp/OPlates.toc
+          grep -Fq 'https://github.com/FreakySphere/OPlates' OPlates/UI/Support.lua
+          grep -Fq 'https://reymit.ir/FreakySphere' OPlates/UI/Support.lua
+          grep -Fq 'FreakySphere' COPYRIGHT.md
+          grep -Fq 'GNU GENERAL PUBLIC LICENSE' LICENSE
+          if grep -R -n -E 'https://reymit\.ir/["[:space:]]' \
+              OPlates README.md INSTALL.md CHANGELOG.md; then
+            echo 'Incomplete public identity data found.' >&2
+            exit 1
+          fi
+
+      - name: Check required files and install layout
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f OPlates/OPlates.toc
+          test -f OPlates/Core.lua
+          test -f OPlates/Art/Logo.blp
+          test -f README.md
+          test -f LICENSE
+          test -f CHANGELOG.md
+          test -f INSTALL.md
+          test -f CONTRIBUTING.md
+          test -f COPYRIGHT.md
+          test -f BRANDING.md
+          test -f THIRD_PARTY_NOTICES.md
+          test -f OPlates/LICENSE.txt
+          test -f OPlates/COPYRIGHT.md
+          test -f OPlates/BRANDING.md
+          test -f OPlates/THIRD_PARTY_NOTICES.md
+          test -f docs/images/logo.png
+          test -f docs/screenshots/settings-overview.png
+
+      - name: Build test archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          zip -q -r OPlates-validation.zip OPlates
+          unzip -t OPlates-validation.zip
+          test "$(unzip -Z1 OPlates-validation.zip | head -n1)" = 'OPlates/'
+
+      - name: Upload validation archive
+        uses: actions/upload-artifact@v7
+        with:
+          name: OPlates-validation
+          path: OPlates-validation.zip
+          if-no-files-found: error
+          retention-days: 7

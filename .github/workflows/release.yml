@@ -1,0 +1,65 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*"
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    name: Package and publish
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Verify tag matches TOC version
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag_version="${GITHUB_REF_NAME#v}"
+          toc_version="$(tr -d '\r' < OPlates/OPlates.toc | sed -n 's/^## Version: \([0-9][0-9.]*\)-WotLK$/\1/p')"
+          test -n "$toc_version"
+          test "$tag_version" = "$toc_version"
+
+      - name: Install Lua 5.1
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes lua5.1
+
+      - name: Check Lua 5.1 syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          find OPlates -type f -name '*.lua' -not -path 'OPlates/Libs/*' -print0 \
+            | xargs -0 -n1 luac5.1 -p
+
+      - name: Test awesome_wotlk compatibility
+        run: lua5.1 tests/awesome_wotlk_compat.lua
+
+      - name: Build installable archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="OPlates-${GITHUB_REF_NAME}.zip"
+          zip -q -r "$archive" OPlates
+          unzip -t "$archive"
+          test "$(unzip -Z1 "$archive" | head -n1)" = 'OPlates/'
+          sha256sum "$archive" > "$archive.sha256"
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="OPlates-${GITHUB_REF_NAME}.zip"
+          gh release create "$GITHUB_REF_NAME" \
+            "$archive" "$archive.sha256" \
+            --title "OPlates ${GITHUB_REF_NAME}" \
+            --generate-notes \
+            --verify-tag

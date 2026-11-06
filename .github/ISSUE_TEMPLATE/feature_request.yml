@@ -1,0 +1,61 @@
+name: Feature request
+description: Suggest a compatible improvement for OPlates
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please describe the gameplay problem first. OPlates targets WoW 3.3.5a and must remain compatible with a stock client.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Gameplay problem
+      description: What is difficult, unclear or missing today?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: Explain how the feature should work from the user’s perspective.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Other settings, addons or workflows you tried.
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Friendly Plates
+        - Enemy Plates
+        - Crowd Control and Auras
+        - Healer CC
+        - Class or Spec Filters
+        - Settings and Profiles
+        - Performance or Compatibility
+        - Documentation
+        - Other
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checklist
+      options:
+        - label: This request is for World of Warcraft 3.3.5a.
+          required: true
+        - label: I searched existing issues for a similar request.
+          required: true
+        - label: I understand that official branding and designated assets follow BRANDING.md.
+          required: true

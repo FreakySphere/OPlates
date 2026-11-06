@@ -1,0 +1,88 @@
+name: Bug report
+description: Report reproducible behavior that appears incorrect in OPlates
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for helping improve OPlates. Search existing issues first and do not include passwords, credentials or private information.
+
+  - type: input
+    id: version
+    attributes:
+      label: OPlates version
+      description: Shown in the OPlates settings header and OPlates.toc.
+      placeholder: "1.00-WotLK"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: client
+    attributes:
+      label: Client environment
+      options:
+        - Stock WoW 3.3.5a
+        - WoW 3.3.5a with FreakySphere awesome_wotlk
+        - WoW 3.3.5a with another compatible awesome_wotlk patch
+        - Other or unknown
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What happened?
+      description: Describe the actual behavior and what you expected instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open ...
+        2. Enable ...
+        3. Enter ...
+        4. Observe ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Character and gameplay context
+      description: Class, specialization, zone/instance, friendly or enemy plate, and combat state when relevant.
+
+  - type: textarea
+    id: errors
+    attributes:
+      label: Lua errors or debug output
+      description: Use `/op debug on` when useful. Remove private information before posting.
+      render: text
+
+  - type: textarea
+    id: addons
+    attributes:
+      label: Other relevant addons
+      description: Especially nameplate, talent, arena or unit-frame addons. State whether the problem remains when they are disabled.
+
+  - type: textarea
+    id: media
+    attributes:
+      label: Screenshots or video
+      description: Drag files here. Hide names or details you do not want public.
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checklist
+      options:
+        - label: I am using a World of Warcraft 3.3.5a client.
+          required: true
+        - label: I searched existing issues for this problem.
+          required: true
+        - label: I did not include credentials or sensitive information.
+          required: true

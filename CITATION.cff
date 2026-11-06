@@ -1,0 +1,16 @@
+cff-version: 1.2.0
+message: "If you reference OPlates, please cite this repository and its author."
+title: "OPlates"
+type: software
+authors:
+  - name: "FreakySphere"
+version: "1.00"
+date-released: "2026-11-03"
+url: "https://github.com/FreakySphere/OPlates"
+repository-code: "https://github.com/FreakySphere/OPlates"
+license: "GPL-3.0-or-later"
+keywords:
+  - World of Warcraft
+  - WotLK
+  - nameplates
+  - addon

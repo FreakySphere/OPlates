@@ -1,0 +1,41 @@
+# Operating systems
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Editors and IDEs
+.idea/
+*.code-workspace
+*.suo
+*.user
+*.swp
+*.swo
+*~
+
+# Local tools and caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.cache/
+*.log
+*.tmp
+*.bak
+
+# World of Warcraft local data (game folder only -- anchored so docs/screenshots/ is not swallowed)
+/WTF/
+/Cache/
+/Errors/
+/Logs/
+/Screenshots/
+*.lua.bak
+
+# Release artifacts
+OPlates-v*.zip
+OPlates-v*.zip.sha256
+release/
+dist/
+
+# Local test and coverage output
+coverage/
+test-results/
+*.coverage

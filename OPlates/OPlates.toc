@@ -1,0 +1,59 @@
+## Interface: 30300
+## Title: |cff33aaffO|r|cffffd100Plates|r
+## Notes: |cffffd100Circular class, spec & role icons|r on every nameplate. |cff33aaffLive CC icons|r with countdowns. |cffff5555Healer CC alerts|r with one-click dispel. Arena numbers, class & spec filters. Type |cff00ff00/op|r to start.
+## Notes-deDE: |cffffd100Runde Klassen-, Spezialisierungs- und Rollensymbole|r auf jeder Namensplakette. |cff33aaffKontrolleffekte live|r mit Countdown. |cffff5555Heiler-CC-Warnungen|r mit Bannen per Klick. Arenanummern, Klassen- & Spezialisierungsfilter. |cff00ff00/op|r
+## Notes-esES: |cffffd100Iconos circulares de clase, especialización y rol|r en cada placa. |cff33aaffControl de masas en vivo|r con cuenta atrás. |cffff5555Alertas de sanador controlado|r con disipación en un clic. Números de arena, filtros de clase y especialización. |cff00ff00/op|r
+## Notes-esMX: |cffffd100Iconos circulares de clase, especialización y rol|r en cada placa. |cff33aaffControl de masas en vivo|r con cuenta regresiva. |cffff5555Alertas de sanador controlado|r con disipación en un clic. Números de arena, filtros de clase y especialización. |cff00ff00/op|r
+## Notes-frFR: |cffffd100Icônes rondes de classe, spécialisation et rôle|r sur chaque barre de nom. |cff33aaffContrôles en direct|r avec compte à rebours. |cffff5555Alertes soigneur contrôlé|r avec dissipation en un clic. Numéros d'arène, filtres de classe et de spécialisation. |cff00ff00/op|r
+## Notes-itIT: |cffffd100Icone circolari di classe, specializzazione e ruolo|r su ogni barra del nome. |cff33aaffControlli in tempo reale|r con conto alla rovescia. |cffff5555Avvisi guaritore controllato|r con dissoluzione in un clic. Numeri dell'arena, filtri di classe e specializzazione. |cff00ff00/op|r
+## Notes-ptBR: |cffffd100Ícones circulares de classe, especialização e função|r em cada placa. |cff33aaffControle de grupo ao vivo|r com contagem regressiva. |cffff5555Alertas de curador controlado|r com dissipar em um clique. Números da arena, filtros de classe e especialização. |cff00ff00/op|r
+## Notes-ruRU: |cffffd100Круглые значки класса, специализации и роли|r на каждом индикаторе. |cff33aaffКонтроль в реальном времени|r с отсчётом. |cffff5555Оповещения о контроле на лекаре|r с рассеиванием в один клик. Номера арены, фильтры классов и специализаций. |cff00ff00/op|r
+## Notes-koKR: 모든 이름표에 |cffffd100직업, 전문화, 역할 원형 아이콘|r. |cff33aaff실시간 군중 제어 아이콘|r 및 남은 시간. |cffff5555치유사 군중 제어 알림|r 및 클릭 한 번 해제. 투기장 번호, 직업 및 전문화 필터. |cff00ff00/op|r
+## Notes-zhCN: |cffffd100圆形职业、专精和职责图标|r显示在每个姓名板上。|cff33aaff实时控制图标|r带倒计时。|cffff5555治疗被控警报|r一键驱散。竞技场编号，职业和专精过滤。|cff00ff00/op|r
+## Notes-zhTW: |cffffd100圓形職業、專精和職責圖示|r顯示在每個名條上。|cff33aaff即時控場圖示|r帶倒數。|cffff5555治療者被控警報|r一鍵驅散。競技場編號，職業和專精過濾。|cff00ff00/op|r
+## Author: FreakySphere
+## Version: 1.00-WotLK
+## SavedVariables: OPlatesDB, OPlatesTalentDB
+## OptionalDeps: Ace3
+## X-Category: Nameplates
+## X-Website: https://github.com/FreakySphere/OPlates
+## X-Source: https://github.com/FreakySphere/OPlates
+## X-Support: https://github.com/FreakySphere/OPlates/issues
+## X-License: GPL-3.0-or-later
+## X-Localizations: enUS, deDE, esES, frFR, itIT, koKR, ptBR, ruRU, zhCN, zhTW
+
+Libs\LibStub\LibStub.lua
+Libs\CallbackHandler-1.0\CallbackHandler-1.0.xml
+Libs\AceAddon-3.0\AceAddon-3.0.xml
+Libs\AceDB-3.0\AceDB-3.0.xml
+Libs\AceDBOptions-3.0\AceDBOptions-3.0.xml
+Libs\AceConsole-3.0\AceConsole-3.0.xml
+Libs\AceGUI-3.0\AceGUI-3.0.xml
+Libs\AceConfig-3.0\AceConfig-3.0.xml
+Libs\AceSerializer-3.0\AceSerializer-3.0.xml
+Libs\AceLocale-3.0\AceLocale-3.0.xml
+Libs\LibDeflate\LibDeflate.lua
+Libs\LibDataBroker-1.1\LibDataBroker-1.1.lua
+Libs\LibDBIcon-1.0\LibDBIcon-1.0.lua
+Libs\LibNameplates-1.0\LibNameplates-1.0.lua
+
+Locales\Locales.xml
+
+Common\Constants.lua
+Common\CrowdControl.lua
+Common\Debug.lua
+Common\Talents.lua
+Common\Feral.lua
+Common\GroupTalents.lua
+Core.lua
+Profiles\Helpers.lua
+Nameplates\Overlay.lua
+Nameplates\Options.lua
+Nameplates\Filters.lua
+Misc\HealerInCrowdControl.lua
+Misc\Options.lua
+UI\Theme.lua
+UI\Widgets.lua
+UI\Settings.lua
+UI\Support.lua
+

@@ -1,0 +1,23 @@
+# Text files
+* text=auto
+
+*.lua  text eol=lf
+*.md   text eol=lf
+*.yml  text eol=lf
+*.yaml text eol=lf
+*.json text eol=lf
+*.cff  text eol=lf
+*.toc  text eol=crlf
+*.xml  text eol=crlf
+
+# Game and documentation artwork
+*.blp binary
+*.tga binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+
+# Release archives
+*.zip binary
