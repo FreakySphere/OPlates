@@ -184,6 +184,17 @@ A PvE layer in the spirit of BigWigs and DBM: when a boss puts something on a ra
 
 ---
 
+## 📄 Project & license
+
+- **Download** — [latest release](https://github.com/FreakySphere/OPlates/releases/latest)
+- **Source & issues** — [FreakySphere/OPlates](https://github.com/FreakySphere/OPlates)
+- **License** — [GNU GPL-3.0-or-later](LICENSE)
+- **Credits & asset terms** — [Copyright](COPYRIGHT.md) · [Branding](BRANDING.md) · [Third-party notices](THIRD_PARTY_NOTICES.md)
+
+OPlates is an independent community project. It is not affiliated with or endorsed by Blizzard Entertainment or Warmane.
+
+---
+
 ## 💛 Support OPlates
 
 I built OPlates to give back to the lovely WotLK 3.3.5a community, and especially to support Warmane players and keep the spirit of this server alive. It took many long hours of work to make every plate and mechanism fixed and stable.
@@ -222,15 +233,6 @@ bc1qqvl3edwwna38gh2xg9jhu9tz675g000x47mnwz
 ```
 
 ---
-
-## 📄 Project & license
-
-- **Download** — [latest release](https://github.com/FreakySphere/OPlates/releases/latest)
-- **Source & issues** — [FreakySphere/OPlates](https://github.com/FreakySphere/OPlates)
-- **License** — [GNU GPL-3.0-or-later](LICENSE)
-- **Credits & asset terms** — [Copyright](COPYRIGHT.md) · [Branding](BRANDING.md) · [Third-party notices](THIRD_PARTY_NOTICES.md)
-
-OPlates is an independent community project. It is not affiliated with or endorsed by Blizzard Entertainment or Warmane.
 
 <div align="center">
 
