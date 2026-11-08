@@ -15,7 +15,7 @@ Built for **World of Warcraft: Wrath of the Lich King 3.3.5a**, with love for th
 [![License](https://img.shields.io/badge/license-GPL--3.0--or--later-d4af37?style=flat-square)](LICENSE)
 [![Issues](https://img.shields.io/github/issues/FreakySphere/OPlates?style=flat-square&color=8f6ed5)](https://github.com/FreakySphere/OPlates/issues)
 
-[✨ The idea](#-the-idea) · [🎯 What it does](#-what-it-does) · [📸 See it](#-see-it) · [⚡ Install](#-install-in-30-seconds) · [🧩 Compatibility](#-compatibility) · [🗺️ Roadmap](#-roadmap) · [💛 Support](#-support-oplates)
+[✨ The idea](#-the-idea) · [📸 See it](#-see-it) · [⚡ Install](#-install-in-30-seconds) · [🧩 Compatibility](#-compatibility) · [🗺️ Roadmap](#-roadmap) · [💛 Support](#-support-oplates)
 
 </div>
 
@@ -33,68 +33,93 @@ OPlates adds exactly one thing: a single **circular icon above every friendly an
 
 ---
 
-## 🎯 What it does
+## 📸 See it
 
-### 🟡 The circle
+In-game, on a 3.3.5a client. Nothing staged.
 
-One circular icon per player and per supported pet — no clutter, no second health bar, no wall of text.
+### 🟡 The plates
 
-- **Class**, **specialization**, or **role** — healer and tank icons included, each with its own size
-- A **class-colored border**, so you read the class before you read the icon
-- **Pulsing yellow border** the moment you target someone, back to class color the instant you switch away
-- A **question mark** until the client knows who that player is — never a wrong guess
-- Optional **name underneath**, optional **Arena 1–5** numbers, optional **flag-carrier** icon
+One circle above every friendly and enemy player. Class, spec or role — your choice, per side — inside a ring that is always their class colour. Nothing else is drawn on the plate.
 
-Choose per side. Your friendly plates and your enemy plates are configured completely independently.
+<p align="center">
+  <img src="docs/screenshots/friendly-icons.jpg" alt="OPlates circular class and healer icons above friendly players in Dalaran" width="620">
+</p>
+<p align="center"><sub><b>Friendly plates · Dalaran</b> — warrior, shaman and two healers, each with their own circle</sub></p>
+
+### ⚔️ In combat
+
+The same rule at full speed in Warsong Gulch. The flag carrier is marked, the healers are crosses, everyone else is their class. You read the fight in one glance instead of hovering names.
+
+<p align="center">
+  <img src="docs/screenshots/nameplates-combat-flag-2.jpg" alt="OPlates icons on enemy nameplates in Warsong Gulch with the flag carrier marked" width="620">
+</p>
+<p align="center"><sub><b>Enemy plates · Warsong Gulch</b> — flag carrier, healer and class icons at the same time</sub></p>
+
+### 🎯 Target highlight
+
+Target a player and their ring turns yellow and pulses. Switch away and it snaps straight back to their class colour — no fade, no delay.
+
+<p align="center">
+  <img src="docs/screenshots/targeted-enemy-healer.jpg" alt="OPlates target highlight: a pulsing yellow ring around a targeted enemy healer" width="340">
+</p>
+<p align="center"><sub><b>Targeted enemy healer</b> — the yellow ring follows your target</sub></p>
 
 ### 🌀 Crowd control, the instant it lands
 
-The class icon is **replaced by the CC icon immediately**, with the remaining duration ticking down — then swapped back the moment it ends. No delay, no stale icon, no guessing whether that stun is still on.
+A stun lands and the class icon is gone, replaced by the CC icon with its remaining duration ticking down. The moment the effect ends, the class icon is back. Smart diminishing returns keep the timer honest, and priority decides what you see when effects overlap.
 
-- **Smart diminishing returns** keep the timer honest across repeated CC
-- **Priority order** decides what you see when effects overlap — a stun outranks a fear, a fear outranks a silence
-- Works from a live aura when the client exposes one, and from a DR-aware estimate when it does not
+<p align="center">
+  <img src="docs/screenshots/enemy-cc.jpg" alt="OPlates showing a crowd control icon with a countdown above an enemy nameplate" width="520">
+</p>
+<p align="center"><sub><b>Stun on an enemy</b> — CC icon with a live countdown, back to class the instant it ends</sub></p>
 
-### ✨ Your buffs and debuffs, not someone else's idea of important
+### 🚨 Healer CC alerts
 
-Paste **spell IDs** into the friendly or enemy whitelist and that aura takes the circle's place while it is up. Independent lists per side. Crowd control always wins over an aura — you will never miss a stun because a HoT was prettier.
+A second layer, for your own group. When a healer gets controlled, an alert appears wherever you put it, with the countdown and an optional one-click dispel or breaker.
 
-### 🚨 Healer CC alerts — the one that saves the pull
+<p align="center">
+  <img src="docs/screenshots/healer-cc-alert.gif" alt="OPlates healer crowd control alert with countdown and dispel button" width="225">
+</p>
+<p align="center"><sub><b>Healer CC alert</b> — countdown, plus a breaker your character actually knows</sub></p>
 
-A second, separate layer: when a **healer in your group** gets crowd controlled, OPlates shows a movable on-screen alert — where you want it, at the size you want, with the countdown style you prefer, optionally with a sound, up to five at once.
+### 🎛️ Filters for every class and every spec
 
-An optional adjacent button can fire a **dispel or breaker your character actually knows**. Blizzard's secure-action rules apply: set the modifier before combat, then click with **Alt**, **Shift** or **Ctrl**. Prefer to keep it visual? **Display only** turns the click off and leaves the alert.
-
-> A healer standing next to you is covered instantly. A healer across the map needs to be running OPlates too.
-
-### 🧠 Built for the real 3.3.5a client
-
-OPlates runs on a **stock, unpatched 3.3.5a client** — no patch required, no dependencies to install, libraries bundled.
-
-On a stock client the game does not expose every visible nameplate as a unit, so identity can take a moment. OPlates learns it from mouseover, target, talent inspection, group data and combat events, and remembers it for as long as you allow.
-
-With a supported **`awesome_wotlk`** patch it is a different experience entirely: visible players are known **instantly**, with no hover at all.
-
-### 🛠️ Yours to shape
-
-Separate friendly/enemy pages · class and spec filters · icon size and position per icon type · PvP-only modes · profiles you can save, switch, import and export · a themed settings window (or `/op classic`) · optional minimap button · session-only debug logs.
-
----
-
-## 📸 See it
-
-> **Placeholder images.** These are stand-ins — real in-game captures are coming. The filenames are fixed, so the screenshots can be dropped in without touching this README. See [`docs/screenshots/README.md`](docs/screenshots/README.md).
+Configured separately for friends and enemies. Click an icon to hide it — the change applies instantly, and hiding an icon never hides the player.
 
 <table>
 <tr>
-<td width="50%"><img src="docs/screenshots/nameplates-combat.png" alt="OPlates icons on player nameplates in combat"><br><sub><b>One icon per player</b> — class, spec and role at a glance</sub></td>
-<td width="50%"><img src="docs/screenshots/settings-overview.png" alt="The OPlates settings window"><br><sub><b>The settings window</b> — everything in one place</sub></td>
+<td width="50%" align="center"><img src="docs/screenshots/friendly-class-filters.png" alt="OPlates Friendly Class Filters window" width="420"><br><sub><b>Friendly Class Filters</b></sub></td>
+<td width="50%" align="center"><img src="docs/screenshots/enemy-class-filters.png" alt="OPlates Enemy Class Filters window" width="420"><br><sub><b>Enemy Class Filters</b></sub></td>
 </tr>
 <tr>
-<td width="50%"><img src="docs/screenshots/class-spec-filters.png" alt="OPlates Class and Spec Filters"><br><sub><b>Class &amp; Spec Filters</b> — decide exactly who shows what</sub></td>
-<td width="50%"><img src="docs/screenshots/healer-cc-alert.png" alt="OPlates healer crowd-control alert"><br><sub><b>Healer CC alert</b> — with one-click dispel</sub></td>
+<td width="50%" align="center"><img src="docs/screenshots/friendly-spec-filters.png" alt="OPlates Friendly Spec Filters window" width="400"><br><sub><b>Friendly Spec Filters</b> — all 30 specs</sub></td>
+<td width="50%" align="center"><img src="docs/screenshots/enemy-spec-filters.png" alt="OPlates Enemy Spec Filters window" width="400"><br><sub><b>Enemy Spec Filters</b> — all 30 specs</sub></td>
 </tr>
 </table>
+
+### 🖼️ More from the battlefield
+
+<table>
+<tr>
+<td width="33%" align="center"><img src="docs/screenshots/friendly-icons-2.jpg" alt="OPlates friendly icons above players on a ship deck" width="280"><br><sub>Friendly plates, ship deck</sub></td>
+<td width="33%" align="center"><img src="docs/screenshots/friendly-duels.jpg" alt="OPlates icons during a duel" width="280"><br><sub>Duels</sub></td>
+<td width="33%" align="center"><img src="docs/screenshots/nameplates-combat-bg.jpg" alt="OPlates icons in a battleground fight" width="280"><br><sub>Battleground fight</sub></td>
+</tr>
+<tr>
+<td align="center"><img src="docs/screenshots/nameplates-combat-bg-2.jpg" alt="OPlates icons in a crowded team fight" width="280"><br><sub>Crowded team fight</sub></td>
+<td align="center"><img src="docs/screenshots/nameplates-combat-flag.jpg" alt="OPlates flag carrier icon in a battleground" width="280"><br><sub>Flag carrier</sub></td>
+<td align="center"><img src="docs/screenshots/nameplates-combat-warsong-gulch.jpg" alt="OPlates icons in Warsong Gulch" width="280"><br><sub>Warsong Gulch</sub></td>
+</tr>
+</table>
+
+### ⚙️ One window for all of it
+
+Friendly and enemy plates side by side, healer alerts, tools, profiles — and the roadmap features already sitting in the rail, marked **soon**.
+
+<p align="center">
+  <img src="docs/screenshots/settings-overview.png" alt="The OPlates settings window" width="620">
+</p>
+<p align="center"><sub><b>The settings window</b> — type <code>/op</code> and everything is here</sub></p>
 
 ---
 
