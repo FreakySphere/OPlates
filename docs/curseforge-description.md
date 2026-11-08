@@ -20,7 +20,7 @@ OPlates adds exactly one thing: a single **circular icon above every friendly an
 
 > **It does not replace your nameplates.** TidyPlates, ThreatPlates, Kui Nameplates, NotPlater, ElvUI, etc — keep every bar, every font, every pixel of your setup. OPlates draws on top of it.
 
-This entire idea was put forward and keep running by a project calling **[SweepyBoop's PvP Helper](https://www.curseforge.com/wow/addons/sweepyboops-pvp-helper)**, and since there was no compatible version for 3.3.5a, I decided to create a simillar AddOn by myself.
+This entire idea was put forward and kept running by a project calling **[SweepyBoop's PvP Helper](https://www.curseforge.com/wow/addons/sweepyboops-pvp-helper)**, and since there was no compatible version for 3.3.5a, I decided to create a similar AddOn by myself.
 
 ***
 
