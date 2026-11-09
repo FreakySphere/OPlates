@@ -568,6 +568,9 @@ addon.GetWotLKNameplateOptions = function(order)
                         classToSpecDelayEnabled = { order = 1, type = "toggle", width = "full", name = "Show the class first", desc = "Keep the class icon briefly before the spec replaces it. Off: switch at once. Friendly players only, while Class icon and Spec icon are both on.", disabled = function() local n = OPlates.db.profile.nameplates return not (n.showClassIcon ~= false and n.showSpec ~= false) end },
                         classToSpecDelay = { order = 2, type = "range", width = "full", name = "Delay (seconds)", desc = "How long the class icon stays before the spec replaces it.", min = 0.5, max = 3, step = 0.05, set = setRange, disabled = function() local n = OPlates.db.profile.nameplates return not (n.showClassIcon ~= false and n.showSpec ~= false and n.classToSpecDelayEnabled ~= false) end },
                     }),
+                    diminishing = inline("Diminishing Returns", 4, {
+                        drResetSeconds = { order = 1, type = "range", width = "full", name = "Reset window (seconds)", desc = "How long a crowd-control category stays on diminishing returns before it resets. Every server decides this itself and the real window drifts between 15 and 20 seconds, so no single number is right everywhere. Lower it if icons still show a reduced duration after the effect should have reset; raise it if they snap back to full too early.", min = 15, max = 20, step = 0.1, set = setRange },
+                    }),
                 },
             },
         },

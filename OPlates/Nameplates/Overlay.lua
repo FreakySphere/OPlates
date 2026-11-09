@@ -2105,6 +2105,13 @@ end
 local DR_FACTORS = { 1, 0.5, 0.25 }
 local DR_ALWAYS = { ctrlstun = true, rndstun = true, cheapshot = true, charge = true, cyclone = true }
 
+-- Reset window used by the estimate path. The player can tune it in Advanced;
+-- fall back to the built-in constant before the profile is ready.
+local function DRReset()
+    return (addon.GetDRResetSeconds and addon.GetDRResetSeconds())
+        or addon.CROWD_CONTROL_DR_RESET or 18.1
+end
+
 -- true = enemy plate, false = friendly plate, nil = unknown flags.
 local function DestSide(flags)
     if type(flags) ~= "number" or not bit then return nil end
@@ -2159,7 +2166,7 @@ local function NoteCrowdControl(destGUID, flags, spellID, category, now, refresh
     if not CCWanted(cfg, DestSide(flags)) then return false end
     -- the DR step always advances (a later estimate must know it), on
     -- every side; an exact read below still wins for the drawn duration.
-    local reset = addon.CROWD_CONTROL_DR_RESET or 20
+    local reset = DRReset()
     local base = addon.CrowdControlBaseDuration[spellID] or learnedDuration[spellID]
     local factor, state = ApplyDR(destGUID, DRCategory(spellID, category), now, flags, refresh)
     if state then state.resetAt = now + (base and base * factor or 8) + reset end
@@ -2251,7 +2258,7 @@ local function NoteAuraRemoved(destGUID, spellID, spellName, now)
     if states then
         local drCat = DRCategory(spellID, addon.GetCrowdControlCategory(spellID, spellName))
         local s = drCat and states[drCat]
-        if s then s.resetAt = now + (addon.CROWD_CONTROL_DR_RESET or 20) end
+        if s then s.resetAt = now + DRReset() end
     end
     return changed
 end

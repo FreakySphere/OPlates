@@ -74,6 +74,7 @@ local defaults = {
             showUnknownFriendly = true,
             classToSpecDelay = 1.0,
             classToSpecDelayEnabled = true,
+            drResetSeconds = 18.1,
             petIconsEnabled = true,
             useFlagCarrierIcon = true,
             enemyFlagCarrierIcon = true,

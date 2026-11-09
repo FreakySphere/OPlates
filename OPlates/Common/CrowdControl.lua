@@ -231,7 +231,9 @@ end
 
 -- diminishing-returns categories (DRData-1.0 layout). Spells of one
 -- category share DR: full, then half, then a quarter duration, then immune;
--- reset 20 s (DRData RESET_TIME) after the last one was applied.
+-- reset once the window below has passed. DRData-1.0 ships 20, but the real
+-- window is server-side and dynamic (15-20 s), so 18.1 is only a starting
+-- point the player can tune in Advanced.
 local DR_BY_CATEGORY = { stun = "ctrlstun", silence = "silence", fear = "fear", horror = "horror",
     disorient = "disorient", incapacitate = "disorient", cyclone = "cyclone", root = "ctrlroot", disarm = "disarm" }
 -- spells DRData-1.0 1049 does not list get no DR ("none").
@@ -258,8 +260,19 @@ for drCategory, ids in pairs(drExceptions) do
         addon.CrowdControlDR[spellId] = drCategory ~= "none" and drCategory or false
     end
 end
-addon.CROWD_CONTROL_DR_RESET = 20
+addon.CROWD_CONTROL_DR_RESET = 18.1
 addon.CrowdControlDRByCategory = DR_BY_CATEGORY
+
+-- Reset window in seconds, honouring the Advanced slider. Kept inside the
+-- range the slider offers, so a hand-edited SavedVariables file cannot put the
+-- estimate somewhere absurd.
+function addon.GetDRResetSeconds()
+    local db = OPlates and OPlates.db
+    local cfg = db and db.profile and db.profile.nameplates
+    local value = cfg and tonumber(cfg.drResetSeconds)
+    if value and value >= 15 and value <= 20 then return value end
+    return addon.CROWD_CONTROL_DR_RESET
+end
 
 -- which CC is drawn when a player has several (highest wins, a tie goes
 -- to the newest). Display order (separate from DR): A stuns > B incapacitate/

@@ -12,7 +12,7 @@
 ## Notes-zhCN: |cffffd100圆形职业、专精和职责图标|r显示在每个姓名板上。|cff33aaff实时控制图标|r带倒计时。|cffff5555治疗被控警报|r一键驱散。竞技场编号，职业和专精过滤。|cff00ff00/op|r
 ## Notes-zhTW: |cffffd100圓形職業、專精和職責圖示|r顯示在每個名條上。|cff33aaff即時控場圖示|r帶倒數。|cffff5555治療者被控警報|r一鍵驅散。競技場編號，職業和專精過濾。|cff00ff00/op|r
 ## Author: FreakySphere
-## Version: 1.00-WotLK
+## Version: 1.10-WotLK
 ## SavedVariables: OPlatesDB, OPlatesTalentDB
 ## OptionalDeps: Ace3
 ## X-Category: Nameplates

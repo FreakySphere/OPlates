@@ -14,7 +14,7 @@ body:
     attributes:
       label: OPlates version
       description: Shown in the OPlates settings header and OPlates.toc.
-      placeholder: "1.00-WotLK"
+      placeholder: "1.10-WotLK"
     validations:
       required: true
 
