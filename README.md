@@ -125,7 +125,7 @@ Friendly and enemy plates side by side, healer alerts, tools, profiles — and t
 
 ## ⚡ Install in 30 seconds
 
-1. Grab **`OPlates-v1.10.zip`** from [**Releases**](https://github.com/FreakySphere/OPlates/releases/latest).
+1. Grab **`OPlates-v1.11.zip`** from [**Releases**](https://github.com/FreakySphere/OPlates/releases/latest).
 2. Close World of Warcraft completely.
 3. Extract the **`OPlates`** folder into your addons folder:
 

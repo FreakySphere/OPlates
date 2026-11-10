@@ -8,6 +8,13 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). OPl
 
 No public changes yet.
 
+## [1.11] - 2026-11-10
+
+### Fixed
+
+- **Startup error on a clean client.** `Profiles/Helpers.lua` called `EnableResize` on an AceGUI frame that does not provide it, and `SetClipsChildren`, which is not a 3.3.5a frame method at all. Either one aborted initialisation, so the settings table was never registered (`/op` did nothing) and an empty Import window was left on screen. Both calls are now guarded, and the bundled AceGUI Frame widget gained the missing `EnableResize` method so the dialogs stay fixed-size.
+- **Enemy icons disappearing after hover or target.** On servers whose player GUIDs do not begin with `0x0000`, the NPC guard treated those plates as creatures and hid them as soon as a GUID was bound — which is exactly when you hovered or targeted. Playerhood is now proven by any of: a player-shaped GUID, a class-coloured bar, a cached identity, or a plate already drawn as a player.
+
 ## [1.10] - 2026-11-09
 
 ### Added

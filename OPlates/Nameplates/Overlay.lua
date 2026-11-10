@@ -1790,7 +1790,9 @@ local function ApplyEnemy(plate, ov, guid, name, unit, cached, liveClass)
     else
         guid = guid or data.guid
     end
-    if guid then ov._guid = guid end
+    -- Remember that this plate is a player, so a later render without a unit
+    -- token (after mouseout) still has proof and is not hidden as an NPC.
+    if guid then ov._guid = guid; ov._playerGUID = guid end
     local classFile = data.class or liveClass
     local isPet = data.isPet or IsPetUnit(unit)
     -- Inspection/group data always wins; a combat-log spec only fills the gap.
@@ -1949,7 +1951,7 @@ UpdatePlate = function(plate)
     end
     local watched = addon._debugEnabled and ((guid and addon._debugWatchGUID == guid) or (unit == "mouseover"))
     if watched then
-        DCompact("PLATE", guid, "UpdatePlate name=%s guid=%s unit=%s reaction=%s type=%s friendly=%s class=%s spec=%s tex=%s healer=%s tank=%s", tostring(name), tostring(guid), tostring(unit), tostring(reaction), tostring(ptype), tostring(isFriendly), tostring(data and data.class), tostring(data and data.spec), tostring(data and data.specTexture), tostring(data and data.isHealer), tostring(data and data.isTank))
+        DCompact("PLATE", guid, "UpdatePlate name=%s guid=%s unit=%s reaction=%s type=%s friendly=%s class=%s spec=%s tex=%s healer=%s tank=%s | guid player=%s pet=%s guardian=%s creature=%s iconPet=%s playerPlate=%s", tostring(name), tostring(guid), tostring(unit), tostring(reaction), tostring(ptype), tostring(isFriendly), tostring(data and data.class), tostring(data and data.spec), tostring(data and data.specTexture), tostring(data and data.isHealer), tostring(data and data.isTank), tostring(IsPlayerGUID(guid)), tostring(IsPetGUID(guid)), tostring(GuardianClass(guid) ~= nil), tostring(CreatureID(guid)), tostring(IsIconPetGUID(guid)), tostring(isPlayerPlate))
     end
 
     -- Never draw player identity icons on NPCs/creatures/training dummies.
@@ -1967,8 +1969,17 @@ UpdatePlate = function(plate)
     -- and a grey (tapped) bar is an NPC, so neither is drawn without proof.
     local liveClass
     if not isFriendly and not unit then
-        liveClass = (guid == nil or IsPlayerGUID(guid)) and LibNameplates.GetClass and LibNameplates:GetClass(plate) or nil
-        if not IsPlayerGUID(guid) and not liveClass then
+        -- The bar colour is the only class source when there is no unit token, so
+        -- read it whatever the GUID looks like.
+        liveClass = LibNameplates.GetClass and LibNameplates:GetClass(plate) or nil
+        -- A player GUID does not always start with 0x0000: the high word is a
+        -- server-side detail and some servers (Warmane) use a different one. Prove
+        -- "player" by any of: a player-shaped GUID, a class-coloured bar, an
+        -- identity we already cached for this GUID, or a plate we already drew as
+        -- a player. Anything left is an NPC and gets no icon.
+        local provenPlayer = IsPlayerGUID(guid) or liveClass ~= nil
+            or (guid ~= nil and (cacheByGUID[guid] ~= nil or ov._playerGUID == guid))
+        if not provenPlayer then
             HideOverlay(plate)
             return
         end

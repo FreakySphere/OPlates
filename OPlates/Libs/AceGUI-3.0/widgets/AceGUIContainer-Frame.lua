@@ -110,6 +110,15 @@ local methods = {
 		content.height = contentheight
 	end,
 
+	-- Backported from upstream AceGUI Frame 30: version 21 shipped without this,
+	-- so any caller doing widget:EnableResize(false) died on a nil method.
+	["EnableResize"] = function(self, state)
+		local func = state and "Show" or "Hide"
+		self.sizer_se[func](self.sizer_se)
+		self.sizer_s[func](self.sizer_s)
+		self.sizer_e[func](self.sizer_e)
+	end,
+
 	["SetTitle"] = function(self, title)
 		self.titletext:SetText(title)
 	end,
@@ -285,6 +294,9 @@ local function Constructor()
 		statustext  = statustext,
 		content     = content,
 		frame       = frame,
+		sizer_se    = sizer_se,
+		sizer_s     = sizer_s,
+		sizer_e     = sizer_e,
 		type        = Type
 	}
 	for method, func in pairs(methods) do

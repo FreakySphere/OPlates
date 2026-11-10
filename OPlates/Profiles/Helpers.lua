@@ -123,7 +123,11 @@ addon.CreateExportDialog = function()
     local export = AceGUI:Create("Frame");
 
     export:SetWidth(550);
-    export:EnableResize(false);
+    -- EnableResize only exists on AceGUI Frame >= 22. When another addon supplies
+    -- an older AceGUI, the dialog stays resizable instead of erroring out.
+    if ( export.EnableResize ) then
+        export:EnableResize(false);
+    end
     export:SetStatusText("");
     export:SetLayout("Flow");
     export:SetTitle("Export");
@@ -136,7 +140,11 @@ addon.CreateExportDialog = function()
     exportEditBox:SetFullWidth(true);
     exportEditBox:SetWidth(500);
     exportEditBox.button:Hide();
-    exportEditBox.frame:SetClipsChildren(true);
+    -- SetClipsChildren is not a 3.3.5a frame method; only the !!!ClassicAPI shim
+    -- provides it. Without it the text simply is not clipped to the box.
+    if ( exportEditBox.frame.SetClipsChildren ) then
+        exportEditBox.frame:SetClipsChildren(true);
+    end
     export:AddChild(exportEditBox);
     export.editBox = exportEditBox;
 
@@ -151,7 +159,10 @@ addon.CreateImportDialog = function(module)
         import:SetHeight(525);
     end
 
-    import:EnableResize(false);
+    -- See the note in CreateExportDialog: older AceGUI has no EnableResize.
+    if ( import.EnableResize ) then
+        import:EnableResize(false);
+    end
     import:SetStatusText("");
     import:SetLayout("Flow");
     import:SetTitle("Import");
@@ -163,7 +174,10 @@ addon.CreateImportDialog = function(module)
     importEditBox:SetFullWidth(true);
     importEditBox:SetWidth(550);
     importEditBox.button:Hide();
-    importEditBox.frame:SetClipsChildren(true);
+    -- See the note in CreateExportDialog: not a stock 3.3.5a method.
+    if ( importEditBox.frame.SetClipsChildren ) then
+        importEditBox.frame:SetClipsChildren(true);
+    end
     import:AddChild(importEditBox);
     import.editBox = importEditBox;
 
