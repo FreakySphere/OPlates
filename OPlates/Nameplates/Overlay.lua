@@ -287,8 +287,40 @@ local function DB()
 end
 
 -- 3.3.5a player GUIDs have a zero high word (creatures 0xF13, pets 0xF14).
+-- The high word is a server-side detail though: Warmane hands out 0x06/0x07 for
+-- friendly players and 0x0A for hostile ones. The client itself knows which
+-- GUIDs are players, so ask it once per GUID and remember the answer. A "no" is
+-- only remembered briefly, because an enemy may not be cached yet the first time
+-- we see him.
+local playerGUIDMemo, playerGUIDCount = {}, 0
+local PLAYER_GUID_RETRY = 30
+
 local function IsPlayerGUID(guid)
-    return type(guid) == "string" and guid:sub(1, 6) == "0x0000"
+    if type(guid) ~= "string" then return false end
+    if guid:sub(1, 6) == "0x0000" then return true end
+    local memo = playerGUIDMemo[guid]
+    if memo then
+        if memo.player then return true end
+        if memo.retryAt and GetTime() < memo.retryAt then return false end
+    end
+    local isPlayer = false
+    if GetPlayerInfoByGUID then
+        local ok, classFile = pcall(GetPlayerInfoByGUID, guid)
+        isPlayer = ok and type(classFile) == "string" and classFile ~= ""
+    end
+    playerGUIDCount = playerGUIDCount + 1
+    if playerGUIDCount > 2000 then wipe(playerGUIDMemo); playerGUIDCount = 1 end
+    playerGUIDMemo[guid] = isPlayer and { player = true } or { retryAt = GetTime() + PLAYER_GUID_RETRY }
+    return isPlayer
+end
+
+-- The high word is a server-side detail, not a constant: stock cores hand out
+-- 0x0000, Warmane uses 0x06/0x07 for friendly players and 0x0A for hostile
+-- ones. Whenever the combat log is in hand its player flag is the authority,
+-- so nothing here has to guess the layout.
+local COMBATLOG_PLAYER = 0x400
+local function IsPlayerFlags(flags)
+    return type(flags) == "number" and bit ~= nil and bit.band(flags, COMBATLOG_PLAYER) ~= 0
 end
 
 -- only real player pets (hunter/warlock/DK/frost mage) use 0xF14;
@@ -297,14 +329,23 @@ local function IsPetGUID(guid)
     return type(guid) == "string" and guid:sub(3, 5):upper() == "F14"
 end
 
+-- Vehicles (Strand of the Ancients cannons, demolishers, siege engines) are
+-- 0xF15. An empty cannon still has a nameplate and a creature class, so it can
+-- look like a pet to the generic creature paths. It belongs to nobody and must
+-- never be drawn as one.
+local function IsVehicleGUID(guid)
+    return type(guid) == "string" and guid:sub(3, 5):upper() == "F15"
+end
+
 -- The old "pet$" pattern matched only "pet", never partypetN/raidpetN/
 -- arenapetN, and a hovered/targeted pet ("mouseover"/"target") was hidden.
 local function IsPetUnit(unit)
     if type(unit) ~= "string" or not UnitExists(unit) or UnitIsPlayer(unit) then return false end
     local guid = UnitGUID(unit)
+    if IsVehicleGUID(guid) then return false end
     if IsPetGUID(guid) then return true end
-    -- A vehicle (0xF15) occupies the "pet" token while its owner rides it.
-    return unit:find("pet%d*$") ~= nil and not (type(guid) == "string" and guid:sub(3, 5):upper() == "F15")
+    -- A vehicle occupies the "pet" token while its owner rides it.
+    return unit:find("pet%d*$") ~= nil and not IsVehicleGUID(guid)
 end
 
 local function IsPlayerOrPetUnit(unit)
@@ -664,12 +705,18 @@ local function RebuildPetNames()
     wipe(friendlyPetNames); wipe(enemyPetNames)
     local function add(set, petUnit, ownerUnit)
         if UnitExists(petUnit) and not UnitIsPlayer(petUnit) then
-            local name = UnitName(petUnit)
-            if name and name ~= "" and name ~= UNKNOWN then
-                set[name] = true
-                local guid = UnitGUID(petUnit)
-                local ownerClass = ownerUnit and UnitExists(ownerUnit) and select(2, UnitClass(ownerUnit)) or nil
-                NotePetOwner(guid, name, ownerClass)
+            local guid = UnitGUID(petUnit)
+            -- A player riding a cannon or demolisher occupies his pet token, so
+            -- the vehicle's name would enter the pet-name set and every empty
+            -- vehicle on the field would then match KnownPetName and draw a pet
+            -- icon. Vehicles are never pets: keep them out of the set entirely.
+            if not IsVehicleGUID(guid) then
+                local name = UnitName(petUnit)
+                if name and name ~= "" and name ~= UNKNOWN then
+                    set[name] = true
+                    local ownerClass = ownerUnit and UnitExists(ownerUnit) and select(2, UnitClass(ownerUnit)) or nil
+                    NotePetOwner(guid, name, ownerClass)
+                end
             end
         end
     end
@@ -792,7 +839,7 @@ end
 
 -- is this GUID a pet/guardian that gets an icon?
 local function IsIconPetGUID(guid)
-    if not guid or IsSuppressedPetGUID(guid) then return false end
+    if not guid or IsSuppressedPetGUID(guid) or IsVehicleGUID(guid) then return false end
     return IsPetGUID(guid) or GuardianClass(guid) ~= nil
 end
 
@@ -956,7 +1003,11 @@ end
 -- the class is kept with the name (stock GetPlayerInfoByGUID or a live
 -- UnitClass) so a plate of another class never uses that name's store.
 local function NoteAuraName(guid, name, classFile)
-    if type(name) ~= "string" or name == "" or not IsPlayerGUID(guid) then return end
+    -- every caller has already established that the GUID is a player: SyncAuras
+    -- checks UnitIsPlayer, NamesAndDeaths checks the combat-log player flag. The
+    -- old 0x0000 test here rejected every Warmane player and left the name map
+    -- empty, which killed the by-name CC lookup for GUID-less plates.
+    if type(name) ~= "string" or name == "" then return end
     if name == UNKNOWNOBJECT or name == UNKNOWN then return end
     if not auraClassByGUID[guid] then
         if not classFile and GetPlayerInfoByGUID then
@@ -977,6 +1028,9 @@ local function NoteAuraName(guid, name, classFile)
     auraNameByGUID[guid] = short
     local old = auraGUIDByName[short]
     if old == nil or old == guid then auraGUIDByName[short] = guid else auraGUIDByName[short] = false end
+    if addon._debugEnabled then
+        D("AURANAME", "name=%s guid=%s class=%s dup=%s", tostring(short), tostring(guid), tostring(auraClassByGUID[guid]), tostring(old ~= nil and old ~= guid))
+    end
 end
 
 local function PickCC(guid, now)
@@ -1086,7 +1140,20 @@ end
 -- (render-only). A known class that differs from the plate's class rejects it.
 local function AuraKeyForPlate(name, classFile)
     if type(name) ~= "string" or name == "" then return nil end
-    local g = auraGUIDByName[ShortName(name)]
+    local short = ShortName(name)
+    local g = auraGUIDByName[short]
+    if not g then
+        -- The name map is filled from the combat log and can lag behind a plate
+        -- that appears before its owner is seen in an event. Every CC entry
+        -- remembers the short name it was applied to, so fall back to the store
+        -- itself rather than giving up on a plate that has never been hovered.
+        for guid, stack in pairs(ccStackByGUID) do
+            for _, e in pairs(stack) do
+                if e.shortName == short then g = guid break end
+            end
+            if g then break end
+        end
+    end
     if not g then return nil end
     if not (ccStackByGUID[g] or auraByGUID[g]) then return nil end
     local known = (cacheByGUID[g] and cacheByGUID[g].class) or (enemySpecByGUID[g] and enemySpecByGUID[g].class)
@@ -1914,6 +1981,8 @@ UpdatePlate = function(plate)
 
     -- Army of the Dead ghouls (and any suppressed GUID) get no icon.
     if IsSuppressedPetGUID(guid) then HideOverlay(plate); return end
+    -- A vehicle is nobody's pet: no icon at all, whatever its plate reports.
+    if IsVehicleGUID(guid) then HideOverlay(plate); return end
     if unit then LearnPetUnit(unit) end
 
     -- pets and guardians by exact pet GUID/unit (0xF14), a confirmed
@@ -1996,6 +2065,17 @@ UpdatePlate = function(plate)
             TryExactUpgrade(guid, GetTime())
         else
             local key = AuraKeyForPlate(name, isFriendly and data and data.class or liveClass)
+            if addon._debugEnabled then
+                local t = GetTime()
+                if t - (addon._auraKeyLogAt or 0) >= 1 then
+                    addon._auraKeyLogAt = t
+                    local mapped = type(name) == "string" and auraGUIDByName[ShortName(name)]
+                    local stored = mapped and (ccStackByGUID[mapped] or auraByGUID[mapped])
+                    D("AURAKEY", "name=%s class=%s mapped=%s stored=%s key=%s friendly=%s",
+                        tostring(name), tostring(isFriendly and data and data.class or liveClass),
+                        tostring(mapped), tostring(stored ~= nil), tostring(key), tostring(isFriendly))
+                end
+            end
             if key then
                 TryExactUpgrade(key, GetTime())
                 ov._auraGUID = key
@@ -2060,6 +2140,11 @@ local events = {
     "CHAT_MSG_BG_SYSTEM_NEUTRAL",
     }
 for _, event in ipairs(events) do eventFrame:RegisterEvent(event) end
+
+-- Combat-log heartbeat. If a capture shows no CLEU lines at all, the handler is
+-- not being reached and nothing downstream (CC, specs, flags) can work; if it
+-- does, the printed flags tell us exactly what the server sends.
+local cleuCount = 0
 
 -- high-frequency events (combat log, auras) coalesce into one full
 -- refresh on the next frame instead of one per event.
@@ -2172,14 +2257,19 @@ local function DRCategory(spellID, category)
     return drCat or (category and addon.CrowdControlDRByCategory[category])
 end
 
-local function NoteCrowdControl(destGUID, flags, spellID, category, now, refresh)
+local function NoteCrowdControl(destGUID, flags, spellID, category, now, refresh, destName)
     local cfg = DB()
-    if not CCWanted(cfg, DestSide(flags)) then return false end
+    if not CCWanted(cfg, DestSide(flags)) then
+        if addon._debugEnabled then D("CC", "skip guid=%s spell=%s side=%s (side or CC option off)", tostring(destGUID), tostring(spellID), tostring(DestSide(flags))) end
+        return false
+    end
     -- the DR step always advances (a later estimate must know it), on
     -- every side; an exact read below still wins for the drawn duration.
     local reset = DRReset()
     local base = addon.CrowdControlBaseDuration[spellID] or learnedDuration[spellID]
-    local factor, state = ApplyDR(destGUID, DRCategory(spellID, category), now, flags, refresh)
+    local drCat = DRCategory(spellID, category)
+    local factor, state = ApplyDR(destGUID, drCat, now, flags, refresh)
+    if addon._debugEnabled then D("CC", "apply guid=%s spell=%s cat=%s dr=%s factor=%s base=%s flags=%s refresh=%s", tostring(destGUID), tostring(spellID), tostring(category), tostring(drCat), tostring(factor), tostring(base), tostring(flags), tostring(refresh)) end
     if state then state.resetAt = now + (base and base * factor or 8) + reset end
     local unit = LiveUnitForGUID(destGUID)
     if unit then
@@ -2193,6 +2283,10 @@ local function NoteCrowdControl(destGUID, flags, spellID, category, now, refresh
     end
     local entry = { icon = addon.GetSpellTexture(spellID), spellID = spellID, category = category, start = now,
         priority = addon.CrowdControlPriority(category, spellID) }
+    -- the combat log carries the destination name; keep the short form on the
+    -- entry so a plate that has never been hovered can find its CC by name even
+    -- when the name->GUID map has not caught up yet (see AuraKeyForPlate).
+    if type(destName) == "string" and destName ~= "" then entry.shortName = ShortName(destName) end
     if base then
         local est = base * factor
         entry.estimated, entry.duration, entry.expires = true, est, now + est
@@ -2336,6 +2430,10 @@ eventFrame:SetScript("OnEvent", function(_, event, ...)
         -- read by position; no table allocated per combat-log event.
         local _, subEvent, sourceGUID, sourceName, sourceFlags, destGUID, destName, destFlags, spellID, spellName, _, auraType = ...
         local changed = false
+        cleuCount = cleuCount + 1
+        if addon._debugEnabled and cleuCount % 100 == 1 then
+            D("CLEU", "#%d sub=%s spell=%s dst=%s dstName=%s dstFlags=%s srcFlags=%s", cleuCount, tostring(subEvent), tostring(spellID), tostring(destGUID), tostring(destName), tostring(destFlags), tostring(sourceFlags))
+        end
 
         -- a player's summon names the pet/guardian's owner by GUID. Army
         -- of the Dead ghouls are suppressed; other summons of a player (Feral
@@ -2362,7 +2460,7 @@ eventFrame:SetScript("OnEvent", function(_, event, ...)
         -- only players can gain a class here, and a player without a
         -- unit token is looked up at most every 2 s instead of scanning ~105 unit
         -- tokens for every creature event and every tokenless enemy event.
-        if spellID and IsPlayerGUID(sourceGUID) and not cacheByGUID[sourceGUID]
+        if spellID and (IsPlayerFlags(sourceFlags) or IsPlayerGUID(sourceGUID)) and not cacheByGUID[sourceGUID]
             and (unresolvedUntil[sourceGUID] or 0) <= now then
             local sourceUnit = FindUnitByGUID(sourceGUID)
             if sourceUnit then
@@ -2378,14 +2476,14 @@ eventFrame:SetScript("OnEvent", function(_, event, ...)
         -- enemy specs: one table lookup per hostile player spell event.
         -- skipped entirely when no enemy option uses spec/role (hibernation).
         if enemySpecActive and spellName and SIGNATURE_EVENTS[subEvent] and type(sourceFlags) == "number" and bit
-            and bit.band(sourceFlags, 0x440) == 0x440 and IsPlayerGUID(sourceGUID)
+            and bit.band(sourceFlags, 0x440) == 0x440
             and NoteEnemySpec(sourceGUID, sourceName, spellName) then
             changed = true
         end
         -- party/raid members' talent spells (affiliation 0x6,
         -- player 0x400) for Healer-in-CC until inspection/comm knows them.
         if spellName and SIGNATURE_EVENTS[subEvent] and type(sourceFlags) == "number" and bit
-            and bit.band(sourceFlags, 0x400) ~= 0 and bit.band(sourceFlags, 0x6) ~= 0 and IsPlayerGUID(sourceGUID) then
+            and bit.band(sourceFlags, 0x400) ~= 0 and bit.band(sourceFlags, 0x6) ~= 0 then
             local sig = Signatures()[spellName]
             local old = sig and groupSpecByGUID[sourceGUID]
             -- same class -> the stronger/equal hint wins; another class only
@@ -2412,10 +2510,18 @@ eventFrame:SetScript("OnEvent", function(_, event, ...)
                     changed = true
                 end
                 -- players and their pets only (estimate + DR, see NoteCrowdControl).
-                if auraTrackActive and (IsPlayerGUID(destGUID) or IsIconPetGUID(destGUID)) then
-                    local category = addon.GetCrowdControlCategory(spellID, spellName)
+                -- The combat-log player flag, not the GUID prefix, decides who is a
+                -- player: Warmane players are 0x06/0x07/0x0A, stock cores 0x0000.
+                local category = addon.GetCrowdControlCategory(spellID, spellName)
+                if addon._debugEnabled and category then
+                    D("CCIN", "guid=%s spell=%s cat=%s flags=%s track=%s playerFlag=%s playerGUID=%s pet=%s",
+                        tostring(destGUID), tostring(spellID), tostring(category), tostring(destFlags),
+                        tostring(auraTrackActive), tostring(IsPlayerFlags(destFlags)), tostring(IsPlayerGUID(destGUID)),
+                        tostring(IsIconPetGUID(destGUID)))
+                end
+                if auraTrackActive and (IsPlayerFlags(destFlags) or IsPlayerGUID(destGUID) or IsIconPetGUID(destGUID)) then
                     if category then
-                        if CCEvents.CrowdControl(destGUID, destFlags, spellID, category, now, subEvent == "SPELL_AURA_REFRESH") then changed = true end
+                        if CCEvents.CrowdControl(destGUID, destFlags, spellID, category, now, subEvent == "SPELL_AURA_REFRESH", destName) then changed = true end
                     elseif (auraType == "BUFF" or auraType == "DEBUFF")
                         and CCEvents.WhitelistedAura(destGUID, destFlags, spellID, auraType, now) then
                         changed = true

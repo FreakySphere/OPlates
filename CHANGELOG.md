@@ -8,6 +8,18 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). OPl
 
 No public changes yet.
 
+## [1.12] - 2026-11-11
+
+### Fixed
+
+- **Enemy crowd control and specs on Warmane.** The combat log's player flag (`0x400`) is now the authority for "is this a player", instead of assuming every player GUID starts with `0x0000`. Warmane hands out `0x06`, `0x07` and `0x0A`, so every combat-log gate rejected its players: no CC icons, no enemy specs from casts, and no group spec hints for Healer-in-CC. Five separate gates had the same assumption.
+- **Enemy CC on plates that have never been hovered.** A plate without a GUID could not find its CC when the name map had not caught up yet. Every CC now carries the short name it was applied to, and the plate falls back to the CC store when the map misses.
+- **Empty vehicles drawn as pets.** A player riding a cannon or demolisher occupies his pet token, so the vehicle's name entered the pet-name set — and from then on every empty vehicle on the field was painted with a pet icon. Vehicles (`0xF15`) are now excluded from that set, from the pet test, and from rendering entirely.
+
+### Added
+
+- Debug output for crowd control, the combat log, the name map and the plate lookup, all behind the existing debug toggle.
+
 ## [1.11] - 2026-11-10
 
 ### Fixed

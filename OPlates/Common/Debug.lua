@@ -39,7 +39,7 @@ function addon:SetDebug(on, reason)
     if on then
         self._debugEnabled = true
         self:DebugReset(reason or "enabled")
-        self:DebugLog("CMD", "Detailed OPlates debug logging ENABLED (%s)", tostring(addon.addonTitle))
+        self:DebugLog("CMD", "Detailed OPlates debug logging ENABLED (%s, %s)", tostring(addon.addonTitle), tostring(addon.UIVersionText))
     else
         self:DebugLog("CMD", "Detailed OPlates debug logging DISABLED")
         self._debugEnabled = false
