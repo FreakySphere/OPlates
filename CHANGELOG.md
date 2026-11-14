@@ -8,6 +8,31 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). OPl
 
 No public changes yet.
 
+## [1.13] - 2026-11-15
+
+### Added
+
+- **Enemy spec detection from 369 signature spells, up from 72.** Every entry is a talent at row 5 or deeper, so no other spec of that class can reach it, and every one was checked against the client's own `Talent.dbc`, `TalentTab.dbc`, `Spell.dbc` and `SkillLineAbility.dbc`. Coverage went from 1–3 spells per spec to 10–15, which is the difference between recognising a player only when he presses a long cooldown and recognising him from ordinary casts. Names shared by two specs, and names learnable by another class, were dropped rather than guessed at.
+- **A respec is now visible while you watch.** An enemy who changes spec in the open world or in Wintergrasp switches icon on the first signature spell of his new spec. Battlegrounds were never affected: the spec cache is wiped on every loading screen.
+- **`Warmane: patch not allowed`** in the top-right corner of the settings window, in the **Advanced** tab, and in every login banner. Servers that forbid client modifications are not compatible with `awesome_wotlk` or any client patch, and the addon now says so instead of quietly recommending one.
+
+### Changed
+
+- **The unpatched warning is a first-run notice.** It used to appear on every login and every reload, which is noise for anyone on a server where client patches are forbidden — and an unpatched client is a fully supported setup. It now shows once per account and never again. The green "patch detected" banner is likewise once ever. The `DISABLED` prompt still asks every login, because it only reaches players who installed the patch and then switched the option off.
+- **The chat line is separate from the banner.** One short line per login reports the patch state and the Warmane note, whatever the banner decided to do.
+- **Signature strength is now the talent row (5–10)** instead of a hand-assigned 1 or 2, so the value is mechanical and auditable. Depth still decides between hints that agree on a spec: Devastate can no longer downgrade Shockwave.
+- **A different spec of the same class replaces the stored one immediately**, but only from row 8 or deeper. A player cannot use another tree's talent without having the points in it, so a cross-spec signature means he respecced just now — but a 25-point hybrid talent was being read as a respec and could flip a warlock between Demonology and Affliction mid-fight. Row 8 is 40 points, which a hybrid build does not reach.
+- Status text in the settings window no longer prints the detection proof: `awesome_wotlk patch: detected`, not `detected (native UnitTokenFromGUID)`.
+
+### Fixed
+
+- **Enemy crowd control and specs going quiet in long battlegrounds.** The 3.3.5a combat log stops delivering `COMBAT_LOG_EVENT_UNFILTERED` once it fills, and only recovers on a loading screen, so everything that reads it goes blind partway through a match. OPlates now clears the log when it holds 400 or more entries, checked every 5 seconds. In testing this recovered a 304-second stall in Arathi Basin where delivery had fallen to 0.2 events per second, and held 40–100 events per second for the rest of the match. The threshold is deliberate: a blind 2-second clear, which other addons use, would throw away the scrollback of anyone who actually reads the combat log.
+
+### Debug
+
+- A throughput line every 10 seconds, `[CLEU] rate N events/s`, and a line whenever the log is cleared, so a silent capture can be told apart from a delivery problem.
+- `AURAKEY` now reports both lookup paths and both sides. It previously only logged plates with no GUID, which is why hostile lookups never appeared in a capture.
+
 ## [1.12] - 2026-11-11
 
 ### Fixed

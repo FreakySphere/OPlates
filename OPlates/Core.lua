@@ -141,6 +141,11 @@ local defaults = {
         },
         minimap = { hide = true },
     },
+    -- account wide, so switching profiles never re-shows a one-time notice.
+    global = {
+        awesomeWotlkGreeted = false,
+        awesomeWotlkMissingSeen = false,
+    },
 }
 
 local options = {
@@ -332,4 +337,45 @@ function OPlates:RefreshConfig()
     self:SetupHealerInCrowdControl()
     if self.db.profile.minimap.hide then icon:Hide(addonName) else icon:Show(addonName); addon.MinimapFullIcon() end
     self:NotifyOptions()
+end
+
+---------------------------------------------------------------------------
+-- Combat log keep-alive (3.3.5a)
+--
+-- This client stops delivering COMBAT_LOG_EVENT_UNFILTERED once its combat log
+-- fills up, and it only recovers on a loading screen. Everything that reads the
+-- log then goes blind: our crowd control, enemy specs and flag carriers, and
+-- other addons' parsers too. That is why a long Arathi Basin goes quiet while a
+-- freshly entered instance works again.
+--
+-- Clearing the log periodically is the long-standing workaround; Skada ships it
+-- as "Combat Log Fix" ("Keeps the combat log from breaking"), and DBM and
+-- PlateBuffs call it as well. We only clear once the log is close to full, so a
+-- player who actually reads the combat log keeps their scrollback.
+--
+-- Measured in Eye of the Storm: ~60 log entries per second, so a 15 s check let
+-- the log reach 1147 entries before it was cleared. Checking every 5 s and
+-- clearing above 400 caps the peak near 600 instead, and in quiet play the log
+-- never reaches 400 at all, so it is left alone.
+local COMBATLOG_SOFT_CAP = 400
+local COMBATLOG_CHECK_EVERY = 5
+
+do
+    local clear = CombatLogClearEntries
+    local count = CombatLogGetNumEntries
+    if type(clear) == "function" and type(count) == "function" then
+        local frame = CreateFrame("Frame")
+        local elapsed = 0
+        frame:SetScript("OnUpdate", function(_, dt)
+            elapsed = elapsed + dt
+            if elapsed < COMBATLOG_CHECK_EVERY then return end
+            elapsed = 0
+            local ok, entries = pcall(count, true)
+            if not ok or type(entries) ~= "number" or entries < COMBATLOG_SOFT_CAP then return end
+            if addon._debugEnabled then
+                addon:DebugLog("CLEU", "combat log near full (%d entries) - cleared so events keep flowing", entries)
+            end
+            pcall(clear)
+        end)
+    end
 end

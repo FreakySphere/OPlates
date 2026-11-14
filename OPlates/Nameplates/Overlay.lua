@@ -398,9 +398,14 @@ local function NoteEnemySpec(guid, name, spellName)
         end
         return false
     end
-    -- A weaker hint never overrides a deep talent of another tree.
-    if old and old.class == sig.class and old.strength > sig.strength then return false end
-    -- a player never changes class. Another class's signature (a shared
+    -- A different spec of the SAME class means he respecced just now, so the
+    -- newest signature wins - but only from row 8 or deeper (40+ points in that
+    -- tree). A 25-point off-tree talent is a hybrid proc, not a respec: letting
+    -- those through made a 25/46 warlock flicker DEMONOLOGY -> AFFLICTION ->
+    -- DEMONOLOGY inside one teamfight. Depth still decides between hints that
+    -- agree on the spec, which the branch above handles.
+    if old and old.class == sig.class and sig.strength < 8 then return false end
+    -- A player never changes class. Another class's signature (a shared
     -- localized spell name) only replaces a known class when strictly stronger.
     if old and old.class ~= sig.class and old.strength >= sig.strength then return false end
     -- A player whose real class is known (inspection/unit) never takes another class.
@@ -2061,24 +2066,29 @@ UpdatePlate = function(plate)
     -- (group member's target, plate unit). A GUID-less player plate finds its
     -- CC/aura by name (render-only key; never a GUID binding).
     if not unit then
+        local key, path
         if guid then
             TryExactUpgrade(guid, GetTime())
+            key, path = guid, "GUID"
         else
-            local key = AuraKeyForPlate(name, isFriendly and data and data.class or liveClass)
-            if addon._debugEnabled then
-                local t = GetTime()
-                if t - (addon._auraKeyLogAt or 0) >= 1 then
-                    addon._auraKeyLogAt = t
-                    local mapped = type(name) == "string" and auraGUIDByName[ShortName(name)]
-                    local stored = mapped and (ccStackByGUID[mapped] or auraByGUID[mapped])
-                    D("AURAKEY", "name=%s class=%s mapped=%s stored=%s key=%s friendly=%s",
-                        tostring(name), tostring(isFriendly and data and data.class or liveClass),
-                        tostring(mapped), tostring(stored ~= nil), tostring(key), tostring(isFriendly))
-                end
-            end
+            key = AuraKeyForPlate(name, isFriendly and data and data.class or liveClass)
+            path = "NAME"
             if key then
                 TryExactUpgrade(key, GetTime())
                 ov._auraGUID = key
+            end
+        end
+        -- Log only the case worth proving: this plate actually has a CC or aura
+        -- to draw. Hostile plates normally carry a GUID and take the exact path
+        -- above, which the old name-only line could never show.
+        if addon._debugEnabled and key and (ccStackByGUID[key] or auraByGUID[key]) then
+            local t = GetTime()
+            local side = isFriendly and "F" or "H"
+            addon._auraKeyLogAt = addon._auraKeyLogAt or {}
+            if t - (addon._auraKeyLogAt[side] or 0) >= 1 then
+                addon._auraKeyLogAt[side] = t
+                D("AURAKEY", "path=%s name=%s guid=%s key=%s friendly=%s",
+                    path, tostring(name), tostring(guid), tostring(key), tostring(isFriendly))
             end
         end
     end
@@ -2145,6 +2155,12 @@ for _, event in ipairs(events) do eventFrame:RegisterEvent(event) end
 -- not being reached and nothing downstream (CC, specs, flags) can work; if it
 -- does, the printed flags tell us exactly what the server sends.
 local cleuCount = 0
+-- Rolling throughput meter. A combat log that keeps delivering during a dense
+-- fight and a plate that simply cannot be attributed look identical in a bug
+-- report, so the debug log reports the arrival rate itself.
+-- Kept on `addon`, not in locals: the event dispatcher below is already at Lua
+-- 5.1's 60-upvalue ceiling and two more locals stop the file compiling.
+addon._cleuRateAt, addon._cleuRateSeen = 0, 0
 
 -- high-frequency events (combat log, auras) coalesce into one full
 -- refresh on the next frame instead of one per event.
@@ -2457,6 +2473,13 @@ eventFrame:SetScript("OnEvent", function(_, event, ...)
         end
 
         local now = GetTime()
+        addon._cleuRateSeen = addon._cleuRateSeen + 1
+        if now - addon._cleuRateAt >= 10 then
+            if addon._debugEnabled then
+                D("CLEU", "rate %.1f events/s over %.0fs (%d events)", addon._cleuRateSeen / (now - addon._cleuRateAt), now - addon._cleuRateAt, addon._cleuRateSeen)
+            end
+            addon._cleuRateAt, addon._cleuRateSeen = now, 0
+        end
         -- only players can gain a class here, and a player without a
         -- unit token is looked up at most every 2 s instead of scanning ~105 unit
         -- tokens for every creature event and every tokenless enemy event.

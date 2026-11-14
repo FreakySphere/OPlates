@@ -39,30 +39,61 @@ local function awesomeDetected()
 end
 
 -- login banner (replaces the old popup). Pure decision, tested:
--- MISSING every login while unpatched; FOUND once ever (auto-enables the
--- option); DISABLED every login while patched but switched off by the user.
-addon.AwesomeBannerKind = function(detected, greeted, enabled)
-    if not detected then return "MISSING" end
+-- MISSING once ever per account, then never again: an unpatched client is a
+--   normal, supported setup, so the warning is a first-run notice rather than
+--   a nag on every login. Plenty of servers forbid client patches outright.
+-- FOUND once ever (auto-enables the option).
+-- DISABLED every login while patched but switched off by the user.
+addon.AwesomeBannerKind = function(detected, greeted, enabled, missingSeen)
+    if not detected then
+        if missingSeen then return nil end
+        return "MISSING"
+    end
     if not greeted then return "FOUND" end
     if not enabled then return "DISABLED" end
+end
+
+-- The state the chat reports on EVERY login, whether or not a banner is drawn.
+-- A banner is a one-time notice; the chat line is the running status.
+addon.AwesomeStatusKind = function(detected, enabled)
+    if not detected then return "MISSING" end
+    if not enabled then return "DISABLED" end
+    return "FOUND"
 end
 
 -- the awesome_wotlk download link, shown only under not-patched banners.
 local AWESOME_LINK = "https://github.com/FreakySphere/awesome_wotlk/releases/latest"
 
--- hold values are the base durations plus 6 seconds.
+-- the red line every banner carries. Servers that forbid client patches are
+-- not a corner case: installing awesome_wotlk there does nothing useful and can
+-- cost the player their account, so the warning is part of the message itself.
+local WOTLK_WARN = "|cffff3b3bWARMANE AND OTHER SERVERS THAT FORBID CLIENT MODIFICATIONS ARE NOT "
+    .. "COMPATIBLE WITH awesome_wotlk OR ANY CLIENT PATCH. DO NOT INSTALL IT THERE.|r"
+
+-- hold is how long a banner stays on screen before it fades out.
 -- DISABLED has no hold, so its Yes/No prompt never auto-fades.
 local BANNERS = {
-    MISSING = { r = 1, g = 0.27, b = 0.27, hold = 26, link = true,
+    MISSING = { r = 1, g = 0.27, b = 0.27, hold = 20, link = true,
         title = "awesome_wotlk patch not detected",
-        text = "Good news: you are one tiny step away from the full OPlates experience! Right now your client is unpatched, so players only reveal their class after you mouseover them. Install the free FreakySphere awesome_wotlk client patch and every visible player instantly shows class colors, icons and borders, no mouseover needed. Click the link below to select it, copy it, and download the patch:" },
-    FOUND = { r = 0.25, g = 1, b = 0.4, hold = 21,
+        text = "Your client is unpatched, so players reveal their class only after you mouseover them. "
+            .. "The free FreakySphere awesome_wotlk client patch gives every visible player class colors, "
+            .. "icons and borders instantly, with no mouseover at all. Copy the link below if you want it. "
+            .. "OPlates runs fine without it.\n\n" .. WOTLK_WARN },
+    FOUND = { r = 0.25, g = 1, b = 0.4, hold = 20,
         title = "awesome_wotlk patch detected!",
-        text = "OPlates now reads nameplate units straight from your client: every visible player gets class colors, icons and borders instantly, no mouseover needed. You can switch this off in /op > Advanced. Enjoy your sweeps!" },
+        -- the chat line is a running status, not a one-time greeting.
+        chat = "awesome_wotlk patch detected",
+        text = "OPlates now reads nameplate units straight from your client: every visible player gets class "
+            .. "colors, icons and borders instantly, no mouseover needed. You can switch this off in "
+            .. "/op > Advanced.\n\n" .. WOTLK_WARN },
     DISABLED = { r = 1, g = 0.27, b = 0.27, ask = true,
         title = "awesome_wotlk is installed, but switched off",
-        text = "Your client has the awesome_wotlk patch, but OPlates is not using its nameplate units, so you are missing instant class colors, icons and borders on every visible player. Turn it on now?" },
+        text = "Your client has the awesome_wotlk patch, but OPlates is not using its nameplate units, so you "
+            .. "are missing instant class colors, icons and borders on every visible player. Turn it on now?"
+            .. "\n\n" .. WOTLK_WARN },
 }
+-- exposed so tests/awesome_banner.lua can check the wording without a client.
+addon.AwesomeBanners = BANNERS
 
 local function EnableAwesome()
     OPlates.db.profile.nameplates.useAwesomeWotlkNameplateUnits = true
@@ -206,9 +237,24 @@ local function ShowBanner(kind)
     banner.hold, banner.left = spec.hold, spec.hold
     banner:SetAlpha(1)
     banner:Show()
-    addon.PRINT(string.format("|cff%02x%02x%02x%s|r", spec.r * 255, spec.g * 255, spec.b * 255, spec.title))
 end
 addon.ShowAwesomeBanner = ShowBanner
+
+-- The chat line and the on-screen banner are deliberately independent. The
+-- banner is a one-time notice, but the patch state is worth one line in the log
+-- on EVERY login, so a player can always confirm what OPlates detected without
+-- opening the settings. The short Warmane note rides along on all three.
+local WOTLK_SHORT = "|cffff3b3bWarmane: patch not allowed|r"
+
+local function ChatNotice(kind)
+    local spec = BANNERS[kind]
+    if not spec then return end
+    -- floor: %x needs an integer. Lua 5.1 truncates a float for us, 5.3 does not.
+    addon.PRINT(string.format("|cff%02x%02x%02x%s|r  %s",
+        math.floor(spec.r * 255), math.floor(spec.g * 255), math.floor(spec.b * 255),
+        spec.chat or spec.title, WOTLK_SHORT))
+end
+addon.AwesomeChatNotice = ChatNotice
 
 -- Runs once per login, a few seconds after entering the world.
 addon.AwesomeWotlkLoginCheck = function()
@@ -216,8 +262,13 @@ addon.AwesomeWotlkLoginCheck = function()
     local global = OPlates.db.global
     local scanner = addon.TalentScanner
     local detected = awesomeDetected()
-    local kind = addon.AwesomeBannerKind(detected, global.awesomeWotlkGreeted == true, cfg.useAwesomeWotlkNameplateUnits == true)
-    if kind == "FOUND" then
+    local kind = addon.AwesomeBannerKind(detected, global.awesomeWotlkGreeted == true,
+        cfg.useAwesomeWotlkNameplateUnits == true, global.awesomeWotlkMissingSeen == true)
+    if kind == "MISSING" then
+        -- first launch ever. The unpatched warning is never shown again, so a
+        -- player on a server without client patches is not nagged at every login.
+        global.awesomeWotlkMissingSeen = true
+    elseif kind == "FOUND" then
         global.awesomeWotlkGreeted = true
         EnableAwesome()
     elseif detected and cfg.useAwesomeWotlkNameplateUnits == true and scanner and not scanner.plateMode then
@@ -225,6 +276,8 @@ addon.AwesomeWotlkLoginCheck = function()
         OPlates:NotifyOptions()
     end
     if kind then addon.ShowAwesomeBanner(kind) end
+    -- one chat line per login, whatever the banner decided to do (or not do).
+    ChatNotice(addon.AwesomeStatusKind(detected, cfg.useAwesomeWotlkNameplateUnits == true))
     return kind
 end
 
@@ -243,12 +296,14 @@ end
 local function awesomeStatus()
     local scanner = addon.TalentScanner
     local cfg = OPlates.db.profile.nameplates
-    local mode, proof = nil, "unknown"
-    if scanner and scanner.DetectAwesomeWotlk then mode, proof = scanner:DetectAwesomeWotlk() end
-    local patch = mode and ("|cff40ff40detected|r (" .. proof .. ")") or "|cffff6060not detected|r"
+    local mode = nil
+    if scanner and scanner.DetectAwesomeWotlk then mode = scanner:DetectAwesomeWotlk() end
+    local patch = mode and "|cff40ff40detected|r" or "|cffff6060not detected|r"
     local active = scanner and scanner.plateMode and "|cff40ff40in use|r" or "not in use"
+    -- third line is the corner note in the main window, so it stays four words.
     return "awesome_wotlk patch: " .. patch .. "\nNameplate units: "
         .. (cfg.useAwesomeWotlkNameplateUnits and active or "off")
+        .. "\n|cffff3b3bWarmane: patch not allowed|r"
 end
 -- also shown in the top-right corner of the main options window.
 addon.AwesomeStatusText = awesomeStatus
@@ -562,6 +617,13 @@ addon.GetWotLKNameplateOptions = function(order)
                         awesomeWotlkStatus = {
                             order = 2, type = "description", width = "full", fontSize = "medium",
                             name = awesomeStatus,
+                        },
+                        awesomeWotlkWarmane = {
+                            order = 3, type = "description", width = "full", fontSize = "medium",
+                            name = "|cffff3b3bWARMANE AND OTHER SERVERS THAT FORBID CLIENT MODIFICATIONS ARE "
+                                .. "NOT COMPATIBLE WITH awesome_wotlk OR ANY CLIENT PATCH. DO NOT INSTALL THE "
+                                .. "PATCH ON THOSE SERVERS: IT WILL NOT WORK THERE AND CAN COST YOU YOUR "
+                                .. "ACCOUNT. OPlates NEEDS NO CLIENT MODIFICATION AND RUNS FINE WITHOUT IT.|r",
                         },
                     }),
                     transition = inline("Class to Spec", 3, {
