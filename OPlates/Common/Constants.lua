@@ -610,6 +610,18 @@ addon.IsInPvPInstance = function()
     return inInstance and (instanceType == "pvp" or instanceType == "arena")
 end
 
+-- Combat-log flag test without the `bit` library.
+--
+-- 3.3.5a ships `bit`, but servers and addon packs do replace or omit it, and
+-- three call sites used it unguarded - a nil `bit` there was an error inside the
+-- combat-log handler, which silently costs every CC and every enemy spec. Doing
+-- the arithmetic directly removes the dependency: exact for the single-bit masks
+-- the combat log uses, and no library to be missing.
+addon.HasFlag = function(value, mask)
+    if type(value) ~= "number" or type(mask) ~= "number" or value <= 0 or mask <= 0 then return false end
+    return math.floor(value / mask) % 2 == 1
+end
+
 addon.GetClassColor = function(classFile)
     local c = RAID_CLASS_COLORS and RAID_CLASS_COLORS[classFile]
     if c then return c.r, c.g, c.b end

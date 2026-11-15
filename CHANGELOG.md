@@ -8,6 +8,30 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). OPl
 
 No public changes yet.
 
+## [1.14] - 2026-11-15
+
+### Fixed
+
+- **Battlegrounds going quiet partway through a match.** The 3.3.5a combat log stops delivering `COMBAT_LOG_EVENT_UNFILTERED` once it fills, and only recovers on a loading screen — so everything that reads it goes blind. 1.13 tried to prevent that by clearing the log above 400 entries, but the counter it relied on cannot be trusted: in a capture it reported **32, 23 and 202 entries while the log had already stopped delivering**, so the threshold never fired and a match sat at 0.2 events per second for 304 seconds. OPlates now watches for *silence* instead. No combat-log event for 8 seconds inside a battleground means the log has stalled, whatever the counter claims, and it is cleared. The check runs every 2 seconds, so a stall is caught in 8–10 seconds rather than never. Measured across three battlegrounds since: 99–126 clears per match, **zero stalls**.
+- **Two players with the same name.** A plate with no GUID can only be matched by short name, and `Bob-Icecrown` and `Bob-Blackrock` are both `Bob`. The old map held one GUID per name and marked the name unusable on a collision, which broke the lookup for **both** players; the fallback then took whichever match it happened to iterate first, which could put one player's stun on the other. The map is now a set of candidates, narrowed by class, and used only when exactly one survives. A name that stays ambiguous draws nothing — a missing icon is a nuisance, an icon on the wrong player is a lie.
+
+### Changed
+
+- **No external library in the detection path.** Seven call sites used the `bit` library for combat-log flags, three of them unguarded — a client without `bit` would have thrown inside the combat-log handler, silently costing every crowd-control icon and every enemy spec. The flag tests are now plain arithmetic, so OPlates no longer depends on `bit`, `!!!ClassicAPI` or any other library to detect players, crowd control or specs.
+- Every crowd-control entry now carries the class it landed on, so the by-name fallback can narrow by class too.
+
+### Debug
+
+- The lookup line only reports real decisions now. It used to log the "nothing to draw" case as well, which was 3684 of 3826 lines in one capture and pushed the useful ones out of the chat scrollback.
+- `AURAPICK` reports the candidates it saw, the player it chose and why, so a wrong icon can be traced to a specific rule.
+- The stall line records what the entry counter claimed at that moment, which is how the counter's unreliability was confirmed in the first place.
+- The plate retry line is throttled to two per second per player; it was 1557 lines in a single Alterac Valley.
+
+### Compatibility
+
+- Verified against a stock 3.3.5a client with no patches and no `!!!ClassicAPI`.
+- The signature table is unchanged at 369 spells, and the single-candidate name path is untouched, so everything 1.13 achieved for enemy specs and crowd control is preserved.
+
 ## [1.13] - 2026-11-15
 
 ### Added

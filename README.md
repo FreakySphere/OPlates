@@ -125,7 +125,7 @@ Friendly and enemy plates side by side, healer alerts, tools, profiles — and t
 
 ## ⚡ Install in 30 seconds
 
-1. Grab **`OPlates-v1.13.zip`** from [**Releases**](https://github.com/FreakySphere/OPlates/releases/latest).
+1. Grab **`OPlates-v1.14.zip`** from [**Releases**](https://github.com/FreakySphere/OPlates/releases/latest).
 2. Close World of Warcraft completely.
 3. Extract the **`OPlates`** folder into your addons folder:
 
@@ -178,6 +178,20 @@ OPlates is built for two specific patches — **not** every fork that carries th
 
 The patch is entirely optional. OPlates detects what the client can do and switches its nameplate-unit integration on by itself the first time it finds a supported one; you can turn it off again under **Advanced**. A patch modifies your game client — use only the linked releases and read their instructions.
 
+> [!CAUTION]
+> **Warmane does not allow client modifications.** Its rules prohibit patching the game client, so
+> `awesome_wotlk` and every other client patch are **not permitted there** — do not install one on a
+> Warmane account. OPlates is fully supported on a stock client: you simply see a player's class and
+> spec after a hover instead of instantly. Install a patch only on a server that allows it.
+
+### The combat log
+
+3.3.5a stops delivering combat-log events once its log fills up, and only recovers on a loading
+screen. Everything that reads the log then goes blind, which is why crowd control and enemy specs
+could freeze partway through a long battleground. OPlates clears the log when it approaches full,
+and again if no event has arrived for 8 seconds inside a battleground. It only ever touches the
+log's scrollback — your settings, the CC timers and diminishing-returns tracking are unaffected.
+
 > Not Retail. Not Classic Era. Not Wrath Classic. **3.3.5a only.**
 
 ---
@@ -202,6 +216,8 @@ A PvE layer in the spirit of BigWigs and DBM: when a boss puts something on a ra
 **OPlates is not in the AddOns list** — check `Interface\AddOns\OPlates\OPlates.toc` exists, and that you are not one folder too deep.
 
 **A class or spec stays unknown** — normal on a stock client. Target or mouse over the player once, or install a supported patch for instant identity.
+
+**The combat log empties by itself** — that is OPlates keeping it from filling up and going silent. See [The combat log](#the-combat-log).
 
 **The healer alert button will not click in combat** — that is Blizzard, not OPlates. Set an in-combat modifier, make sure **Display only** is off, and configure the alert before the pull.
 

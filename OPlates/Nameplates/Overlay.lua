@@ -59,11 +59,13 @@ local auraByGUID = {}
 -- longest real duration read from an aura (spells without a base duration).
 local drByGUID, drCount = {}, 0
 local learnedDuration, learnedCount = {}, 0
--- render-only player name -> GUID map, used ONLY to look up the CC/aura
--- store for a GUID-less player plate (stock client after a recycle). Never
--- binds a GUID, never touches identity/spec/inspect, never used for pets. A
--- short name seen with two GUIDs maps to false and is never used.
-local auraGUIDByName, auraNameByGUID, auraClassByGUID, auraNameCount = {}, {}, {}, 0
+-- render-only player name -> set of GUIDs that have used it, used ONLY to look
+-- up the CC/aura store for a GUID-less player plate (stock client after a
+-- recycle). Never binds a GUID, never touches identity/spec/inspect, never used
+-- for pets. A name can legitimately belong to several players on cross-realm
+-- servers, so it maps to a set and AuraKeyForPlate narrows it by class; a name
+-- that stays ambiguous is left blank instead of guessing.
+local auraGUIDsByName, auraNameByGUID, auraClassByGUID, auraNameCount = {}, {}, {}, 0
 -- next allowed exact upgrade read per GUID (estimate on top).
 local upgradeAt, upgradeCount = {}, 0
 local prevTargetGUID
@@ -244,7 +246,7 @@ function addon:RequestRefreshNameplateOverlayGUID(guid)
         self._pendingOverlayGUIDs = {}
         local unmatched = {}
         for targetGUID in pairs(queue) do
-            if addon._debugEnabled then D("OVERLAY", "TARGETED refresh executing guid=%s attempt=%d", tostring(targetGUID), f._attempt) end
+            if addon._debugEnabled then DCompact("OVERLAY", targetGUID, "TARGETED refresh executing guid=%s attempt=%d", tostring(targetGUID), f._attempt) end
             local targetData = addon.TalentScanner and addon.TalentScanner:Get(targetGUID)
             local targetName = targetData and targetData.name
             local matched = false
@@ -320,7 +322,7 @@ end
 -- so nothing here has to guess the layout.
 local COMBATLOG_PLAYER = 0x400
 local function IsPlayerFlags(flags)
-    return type(flags) == "number" and bit ~= nil and bit.band(flags, COMBATLOG_PLAYER) ~= 0
+    return addon.HasFlag(flags, COMBATLOG_PLAYER)
 end
 
 -- only real player pets (hunter/warlock/DK/frost mage) use 0xF14;
@@ -1026,16 +1028,28 @@ local function NoteAuraName(guid, name, classFile)
     if not auraNameByGUID[guid] then
         auraNameCount = auraNameCount + 1
         if auraNameCount > 2000 then
-            wipe(auraGUIDByName); wipe(auraNameByGUID); wipe(auraClassByGUID); auraNameCount = 1
+            wipe(auraGUIDsByName); wipe(auraNameByGUID); wipe(auraClassByGUID); auraNameCount = 1
             if type(classFile) == "string" and classFile ~= "" then auraClassByGUID[guid] = classFile end
         end
     end
     auraNameByGUID[guid] = short
-    local old = auraGUIDByName[short]
-    if old == nil or old == guid then auraGUIDByName[short] = guid else auraGUIDByName[short] = false end
+    local set = auraGUIDsByName[short]
+    if not set then set = {}; auraGUIDsByName[short] = set end
+    set[guid] = true
     if addon._debugEnabled then
-        D("AURANAME", "name=%s guid=%s class=%s dup=%s", tostring(short), tostring(guid), tostring(auraClassByGUID[guid]), tostring(old ~= nil and old ~= guid))
+        local n = 0
+        for _ in pairs(set) do n = n + 1 end
+        D("AURANAME", "name=%s guid=%s class=%s candidates=%d", tostring(short), tostring(guid),
+            tostring(auraClassByGUID[guid]), n)
     end
+end
+
+-- The class we believe a GUID has, from the strongest source available: a live
+-- unit, a learned enemy spec, or the class the combat log gave us.
+local function KnownClass(guid)
+    return (cacheByGUID[guid] and cacheByGUID[guid].class)
+        or (enemySpecByGUID[guid] and enemySpecByGUID[guid].class)
+        or auraClassByGUID[guid]
 end
 
 local function PickCC(guid, now)
@@ -1143,29 +1157,78 @@ end
 
 -- the CC/aura store key of a GUID-less player plate, by its name
 -- (render-only). A known class that differs from the plate's class rejects it.
+--
+-- A short name is not proof of identity: cross-realm servers hand out the same
+-- name to different players. So the name map is a set of candidates, narrowed
+-- by class, and only used when exactly one candidate survives. Anything that
+-- stays ambiguous returns nil on purpose - a missing icon is a nuisance, an
+-- icon on the wrong player is a lie. Returns the GUID, plus a reason for the
+-- debug log.
 local function AuraKeyForPlate(name, classFile)
     if type(name) ~= "string" or name == "" then return nil end
     local short = ShortName(name)
-    local g = auraGUIDByName[short]
-    if not g then
-        -- The name map is filled from the combat log and can lag behind a plate
-        -- that appears before its owner is seen in an event. Every CC entry
-        -- remembers the short name it was applied to, so fall back to the store
-        -- itself rather than giving up on a plate that has never been hovered.
-        for guid, stack in pairs(ccStackByGUID) do
-            for _, e in pairs(stack) do
-                if e.shortName == short then g = guid break end
+    local set = auraGUIDsByName[short]
+    local total, accept, acceptN, classHit, classHitN = 0, nil, 0, nil, 0
+    if set then
+        for guid in pairs(set) do
+            total = total + 1
+            local known = KnownClass(guid)
+            if not classFile or not known or known == classFile then
+                accept, acceptN = guid, acceptN + 1
             end
-            if g then break end
+            if classFile and known == classFile then
+                classHit, classHitN = guid, classHitN + 1
+            end
         end
     end
+    local g, why
+    if acceptN == 1 then
+        g, why = accept, "single"
+    elseif classHitN == 1 then
+        g, why = classHit, "class"
+    elseif total == 0 then
+        -- The name map is filled from the combat log and can lag behind a plate
+        -- that appears before its owner is seen in an event. When it knows
+        -- nothing at all, every CC entry still remembers the short name and
+        -- class it was applied to, so the store itself is the fallback - and it
+        -- is only trusted when exactly one player matches.
+        local hit, hitN = nil, 0
+        for guid, stack in pairs(ccStackByGUID) do
+            for _, e in pairs(stack) do
+                if e.shortName == short then
+                    local known = e.class or KnownClass(guid)
+                    if not classFile or not known or known == classFile then
+                        hit, hitN = guid, hitN + 1
+                    end
+                    break
+                end
+            end
+        end
+        if hitN == 1 then g, why = hit, "store" elseif hitN > 1 then why = "store-ambiguous" end
+    else
+        -- Two players share the name and the plate does not tell us which one
+        -- it is. Guessing here is how a stun ends up on the wrong player, so
+        -- leave it blank until a class narrows it.
+        why = "ambiguous"
+    end
+    if g then
+        if not (ccStackByGUID[g] or auraByGUID[g]) then g, why = nil, "empty" end
+    end
+    if addon._debugEnabled and why ~= "empty" then
+        -- "empty" is not a decision, it is the normal state of a player who has
+        -- no CC or aura to draw. Logging it buried the capture under thousands
+        -- of lines and pushed the useful ones out of the scrollback.
+        DCompact("AURAPICK", short, "name=%s class=%s candidates=%d picked=%s why=%s",
+            tostring(short), tostring(classFile), total, tostring(g), tostring(why or "none"))
+    end
     if not g then return nil end
-    if not (ccStackByGUID[g] or auraByGUID[g]) then return nil end
-    local known = (cacheByGUID[g] and cacheByGUID[g].class) or (enemySpecByGUID[g] and enemySpecByGUID[g].class)
-        or auraClassByGUID[g]
+    local known = KnownClass(g)
     if classFile and known and known ~= classFile then return nil end
     return g
 end
+-- exposed so tests/dupe_name.js can drive the resolver through the real combat
+-- log without going through the render pipeline. Not used by the addon.
+addon.DebugAuraKeyForPlate = AuraKeyForPlate
 
 local function HideOverlay(plate)
     local ov = plates[plate]
@@ -2226,8 +2289,8 @@ end
 
 -- true = enemy plate, false = friendly plate, nil = unknown flags.
 local function DestSide(flags)
-    if type(flags) ~= "number" or not bit then return nil end
-    return bit.band(flags, 0x10) == 0
+    if type(flags) ~= "number" then return nil end
+    return not addon.HasFlag(flags, 0x10)
 end
 
 -- every side gets an estimate when no token can read the aura yet
@@ -2244,7 +2307,7 @@ end
 -- Returns the duration factor (1, 0.5, 0.25) and the DR state to time.
 local function ApplyDR(guid, drCat, now, flags, refresh)
     if not drCat then return 1 end
-    if not DR_ALWAYS[drCat] and type(flags) == "number" and bit and bit.band(flags, 0x100) == 0 then return 1 end
+    if not DR_ALWAYS[drCat] and not addon.HasFlag(flags, 0x100) then return 1 end
     local states = drByGUID[guid]
     if not states then
         drCount = drCount + 1
@@ -2303,6 +2366,9 @@ local function NoteCrowdControl(destGUID, flags, spellID, category, now, refresh
     -- entry so a plate that has never been hovered can find its CC by name even
     -- when the name->GUID map has not caught up yet (see AuraKeyForPlate).
     if type(destName) == "string" and destName ~= "" then entry.shortName = ShortName(destName) end
+    -- the class travels with the CC so a GUID-less plate can be narrowed by
+    -- class when several players share its short name (AuraKeyForPlate).
+    entry.class = auraClassByGUID[destGUID]
     if base then
         local est = base * factor
         entry.estimated, entry.duration, entry.expires = true, est, now + est
@@ -2397,16 +2463,16 @@ end
 -- upvalues per function; the handler is at that limit).
 local CCEvents = { CrowdControl = NoteCrowdControl, WhitelistedAura = NoteWhitelistedAura, AuraRemoved = NoteAuraRemoved }
 function CCEvents.NamesAndDeaths(subEvent, sourceGUID, sourceName, sourceFlags, destGUID, destName, destFlags)
-    if bit then
-        if type(destFlags) == "number" and bit.band(destFlags, 0x400) ~= 0 then NoteAuraName(destGUID, destName) end
-        if type(sourceFlags) == "number" and bit.band(sourceFlags, 0x400) ~= 0 then NoteAuraName(sourceGUID, sourceName) end
+    do
+        if addon.HasFlag(destFlags, 0x400) then NoteAuraName(destGUID, destName) end
+        if addon.HasFlag(sourceFlags, 0x400) then NoteAuraName(sourceGUID, sourceName) end
     end
     if destGUID and (subEvent == "UNIT_DIED" or subEvent == "UNIT_DESTROYED") then return NoteUnitDied(destGUID) end
     return false
 end
 
 function CCEvents.WipeNames()
-    wipe(auraGUIDByName); wipe(auraNameByGUID); wipe(auraClassByGUID); auraNameCount = 0
+    wipe(auraGUIDsByName); wipe(auraNameByGUID); wipe(auraClassByGUID); auraNameCount = 0
     wipe(upgradeAt); upgradeCount = 0
 end
 
@@ -2473,6 +2539,11 @@ eventFrame:SetScript("OnEvent", function(_, event, ...)
         end
 
         local now = GetTime()
+        -- heartbeat for the combat-log watchdog in Core.lua. Silence is the only
+        -- reliable sign that 3.3.5a has stopped delivering: its entry counter
+        -- reads low until the log has filled once, which is why the threshold
+        -- alone could not protect the first battleground of a session.
+        addon._cleuLastAt = now
         addon._cleuRateSeen = addon._cleuRateSeen + 1
         if now - addon._cleuRateAt >= 10 then
             if addon._debugEnabled then
@@ -2498,15 +2569,16 @@ eventFrame:SetScript("OnEvent", function(_, event, ...)
         end
         -- enemy specs: one table lookup per hostile player spell event.
         -- skipped entirely when no enemy option uses spec/role (hibernation).
-        if enemySpecActive and spellName and SIGNATURE_EVENTS[subEvent] and type(sourceFlags) == "number" and bit
-            and bit.band(sourceFlags, 0x440) == 0x440
+        if enemySpecActive and spellName and SIGNATURE_EVENTS[subEvent] and type(sourceFlags) == "number"
+            and addon.HasFlag(sourceFlags, 0x400) and addon.HasFlag(sourceFlags, 0x40)
             and NoteEnemySpec(sourceGUID, sourceName, spellName) then
             changed = true
         end
         -- party/raid members' talent spells (affiliation 0x6,
         -- player 0x400) for Healer-in-CC until inspection/comm knows them.
-        if spellName and SIGNATURE_EVENTS[subEvent] and type(sourceFlags) == "number" and bit
-            and bit.band(sourceFlags, 0x400) ~= 0 and bit.band(sourceFlags, 0x6) ~= 0 then
+        if spellName and SIGNATURE_EVENTS[subEvent] and type(sourceFlags) == "number"
+            and addon.HasFlag(sourceFlags, 0x400)
+            and (addon.HasFlag(sourceFlags, 0x2) or addon.HasFlag(sourceFlags, 0x4)) then
             local sig = Signatures()[spellName]
             local old = sig and groupSpecByGUID[sourceGUID]
             -- same class -> the stronger/equal hint wins; another class only
