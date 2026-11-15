@@ -165,7 +165,7 @@ Friendly and enemy plates side by side, healer alerts, tools, profiles — and t
 | | |
 |---|---|
 | **Game** | World of Warcraft: Wrath of the Lich King **3.3.5a** — `Interface 30300` |
-| **Stock client** | ✅ Fully supported. Identity may take a moment on some plates. |
+| **Stock client** | ✅ Fully supported. Enemy specs are learned from the spells a player casts, so most enemies are identified without ever hovering them. |
 | **Patched client** | ✅✅ Instant identity, no hover needed — with a supported patch below |
 | **Dependencies** | None. Libraries are bundled. |
 
