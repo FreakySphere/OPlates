@@ -14,6 +14,9 @@ local frame = CreateFrame("Frame")
 local queue, queued = {}, {}
 local cooldown = {}
 local active, sending, saved
+-- records restored from OPlatesTalentDB (an earlier session), not read now.
+-- A live talent signature beats one of these when the two disagree.
+local diskGUIDs = {}
 local generation, nextTick = 0, 0
 local lastNotifyGUID, lastNotifyUnit, lastNotifyAt = nil, nil, 0
 local foreignGUID, foreignUntil = nil, 0
@@ -259,13 +262,22 @@ local function ReadSnapshot(tx)
             return tonumber((select(5, GetTalentInfo(2, index, true, nil, group)))) or 0
         end)
         role = nil -- assignment controls Tank icon; talents control Bear/Cat icon
-        if feralKind == "CAT" then texture = "Interface\\Icons\\Ability_Druid_CatForm" end
+        -- The tab icon the client hands us for the Feral tree IS the Bear Form
+        -- texture, so an unknown form must fall back to the cat explicitly:
+        -- otherwise every low-level Feral druid is painted as a bear tank while
+        -- "Show tank icons" is on.
+        if addon.FeralTexture then
+            texture = addon.FeralTexture(feralKind) or addon.FeralTexture("CAT") or texture
+        elseif feralKind == "CAT" then
+            texture = "Interface\\Icons\\Ability_Druid_CatForm"
+        end
     end
     -- Replace atomically: never combine a new spec with an old spec's texture.
     local data = { guid = tx.guid, name = tx.name, class = tx.class, spec = spec,
         specTexture = texture, specRole = role, points = points, group = group,
         source = "OPInspect", feralKind = feralKind, updatedAt = GetTime(), learnedAt = time() }
     addon._TalentCache[tx.guid] = data
+    diskGUIDs[tx.guid] = nil
     if saved then
         saved[tx.guid] = data
         local count, oldestGUID, oldestTime = 0, nil, math.huge
@@ -350,6 +362,11 @@ local function Pump()
         chosen.waitReason = nil
         Send(chosen, chosenUnit)
     end
+end
+
+-- true when this record was loaded from disk at login, not read this session
+function Scanner:IsFromDisk(guid)
+    return guid ~= nil and diskGUIDs[guid] == true
 end
 
 function Scanner:Get(unitOrGUID)
@@ -696,7 +713,10 @@ function Scanner:Initialize()
         self:SetPlateUnits(true)
     end
     if not self.persistenceEnabled then
-        OPlatesTalentDB = nil
+        -- Do NOT nil the SavedVariable: switching Class/Spec Memory off must
+        -- never delete what is already stored. `saved` stays nil, so nothing is
+        -- loaded and nothing is written, and the client writes the untouched
+        -- table back at logout.
         return -- no saved-record loading, creation, pruning or writes when disabled
     end
     if type(OPlatesTalentDB) ~= "table" or OPlatesTalentDB.schema ~= 1 then
@@ -716,7 +736,9 @@ function Scanner:Initialize()
     end
     table.sort(records, function(a, b) return a.learnedAt > b.learnedAt end)
     for i, data in ipairs(records) do
-        if i <= MAX_RECORDS then addon._TalentCache[data.guid] = data
+        if i <= MAX_RECORDS then
+            addon._TalentCache[data.guid] = data
+            diskGUIDs[data.guid] = true
         else saved[data.guid] = nil end
     end
     if addon._debugEnabled then D("SESSION", "OPlates newest-notify attribution / observe-adopt; loaded=%d realm=%s", math.min(#records, MAX_RECORDS), realm) end
@@ -725,5 +747,23 @@ function Scanner:Initialize()
             local lib, minor = LibStub(name, true)
             if addon._debugEnabled then D("SESSION", "library=%s loaded=%s minor=%s", name, tostring(lib ~= nil), tostring(minor)) end
         end
+    end
+end
+
+-- Throw away every stored inspection record. Called only by the explicit
+-- "Delete all saved player information" button, never by an option toggle.
+function Scanner:ClearStore()
+    if addon._TalentCache then wipe(addon._TalentCache) end
+    wipe(diskGUIDs)
+    if type(OPlatesTalentDB) ~= "table" then
+        OPlatesTalentDB = { schema = 1, realms = {} }
+    end
+    OPlatesTalentDB.schema = 1
+    OPlatesTalentDB.realms = {}
+    -- while the option is off `saved` stays nil, so the cleared table is not
+    -- repopulated and the client still writes the empty store at logout.
+    if self.persistenceEnabled then
+        saved = {}
+        OPlatesTalentDB.realms[GetRealmName() or "unknown"] = saved
     end
 end

@@ -31,6 +31,8 @@ OPlates adds exactly one thing: a single **circular icon above every friendly an
 
 > **It does not replace your nameplates.** TidyPlates, ThreatPlates, Kui Nameplates, NotPlater, ElvUI — keep every bar, every font, every pixel of your setup. OPlates draws on top of it.
 
+**Class/Spec Memory** keeps what you learn — class, spec and role — across reloads and logins, for friends and enemies alike.
+
 ---
 
 ## 📸 See it
@@ -125,7 +127,7 @@ Friendly and enemy plates side by side, healer alerts, tools, profiles — and t
 
 ## ⚡ Install in 30 seconds
 
-1. Grab **`OPlates-v1.14.zip`** from [**Releases**](https://github.com/FreakySphere/OPlates/releases/latest).
+1. Grab **`OPlates-v1.20.zip`** from [**Releases**](https://github.com/FreakySphere/OPlates/releases/latest).
 2. Close World of Warcraft completely.
 3. Extract the **`OPlates`** folder into your addons folder:
 

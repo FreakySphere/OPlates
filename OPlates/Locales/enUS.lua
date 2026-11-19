@@ -1,9 +1,14 @@
 local addonName, addon = ...;
 local L = LibStub("AceLocale-3.0"):NewLocale(addonName, "enUS", true);
 if not L then return end
-addon.L = LibStub("AceLocale-3.0"):GetLocale(addonName);
 
--- %s is the coloured "/op" command; keep it in every translation.
+-- A missing translation must never raise an error in game, so the
+-- fallback is silent. tests/locale_coverage.lua proves that every key used
+-- in code exists in every locale file, which is a better guard than an
+-- error popup for a player.
+addon.L = LibStub("AceLocale-3.0"):GetLocale(addonName, true);
+
+-- The login banner and the minimap tooltip.
 L["Click to open the settings"] = "Click to open the settings";
 L["Circular class, spec and role icons on every nameplate, live crowd-control icons and instant Healer CC alerts."] = "Circular class, spec and role icons on every nameplate, live crowd-control icons and instant Healer CC alerts.";
 L["OPlates only adds icons. Your nameplate addon keeps its own bars and style."] = "OPlates only adds icons. Your nameplate addon keeps its own bars and style.";
@@ -11,3 +16,114 @@ L["Type %s or click the minimap button to open the settings."] = "Type %s or cli
 L["Open settings"] = "Open settings";
 L["Test"] = "Test";
 L["Hide"] = "Hide";
+
+-- The settings window.
+L["|cffff3b3bWARMANE AND OTHER SERVERS THAT FORBID CLIENT MODIFICATIONS ARE NOT COMPATIBLE WITH awesome_wotlk OR ANY CLIENT PATCH. DO NOT INSTALL IT THERE.|r"] = "|cffff3b3bWARMANE AND OTHER SERVERS THAT FORBID CLIENT MODIFICATIONS ARE NOT COMPATIBLE WITH awesome_wotlk OR ANY CLIENT PATCH. DO NOT INSTALL IT THERE.|r";
+L["Your client is unpatched, so players reveal their class only after you mouseover them. The free FreakySphere awesome_wotlk client patch gives every visible player class colors, icons and borders instantly, with no mouseover at all. Copy the link below if you want it. OPlates runs fine without it."] = "Your client is unpatched, so players reveal their class only after you mouseover them. The free FreakySphere awesome_wotlk client patch gives every visible player class colors, icons and borders instantly, with no mouseover at all. Copy the link below if you want it. OPlates runs fine without it.";
+L["OPlates now reads nameplate units straight from your client: every visible player gets class colors, icons and borders instantly, no mouseover needed. You can switch this off in /op > Advanced."] = "OPlates now reads nameplate units straight from your client: every visible player gets class colors, icons and borders instantly, no mouseover needed. You can switch this off in /op > Advanced.";
+L["Your client has the awesome_wotlk patch, but OPlates is not using its nameplate units, so you are missing instant class colors, icons and borders on every visible player. Turn it on now?"] = "Your client has the awesome_wotlk patch, but OPlates is not using its nameplate units, so you are missing instant class colors, icons and borders on every visible player. Turn it on now?";
+L["|cffff3b3bWarmane: patch not allowed|r"] = "|cffff3b3bWarmane: patch not allowed|r";
+L["|cff40ff40detected|r"] = "|cff40ff40detected|r";
+L["|cffff6060not detected|r"] = "|cffff6060not detected|r";
+L["|cff40ff40in use|r"] = "|cff40ff40in use|r";
+L["not in use"] = "not in use";
+L["awesome_wotlk patch: "] = "awesome_wotlk patch: ";
+L["Nameplate units: "] = "Nameplate units: ";
+L["off"] = "off";
+L["Everything"] = "Everything";
+L["Healers only"] = "Healers only";
+L["Tanks only"] = "Tanks only";
+L["Class icons only"] = "Class icons only";
+L["Spec icons only"] = "Spec icons only";
+L["Pets only"] = "Pets only";
+L["Flag carriers only"] = "Flag carriers only";
+L["Crowd control only"] = "Crowd control only";
+L["Buffs only"] = "Buffs only";
+L["Debuffs only"] = "Debuffs only";
+L["Pick which icons may appear. \"Crowd control only\" shows CC icons only (gone the moment the CC ends). \"Buffs only\" / \"Debuffs only\" show your listed spells (plus CC when \"Show crowd control\" is on). Options a mode doesn't use turn grey and keep their values."] = "Pick which icons may appear. \"Crowd control only\" shows CC icons only (gone the moment the CC ends). \"Buffs only\" / \"Debuffs only\" show your listed spells (plus CC when \"Show crowd control\" is on). Options a mode doesn't use turn grey and keep their values.";
+L["Seconds left, in the center of CC and aura icons. White from 1 minute, yellow under 1 minute, red from 5 seconds (then tenths). Only for effects with a known duration."] = "Seconds left, in the center of CC and aura icons. White from 1 minute, yellow under 1 minute, red from 5 seconds (then tenths). Only for effects with a known duration.";
+L["Class Filters"] = "Class Filters";
+L["Spec Filters"] = "Spec Filters";
+L["Choose which classes show their class icon. A hidden class still shows its spec, healer/tank, CC and aura icons."] = "Choose which classes show their class icon. A hidden class still shows its spec, healer/tank, CC and aura icons.";
+L["Choose which specs show their spec icon. A hidden spec shows the class icon instead (when class icons are on and that class is not hidden)."] = "Choose which specs show their spec icon. A hidden spec shows the class icon instead (when class icons are on and that class is not hidden).";
+L["Nameplates"] = "Nameplates";
+L["Friendly Plates"] = "Friendly Plates";
+L["Clean circular icons for your allies."] = "Clean circular icons for your allies.";
+L["Essentials"] = "Essentials";
+L["Friendly icons"] = "Friendly icons";
+L["Master switch for every icon on friendly players and pets."] = "Master switch for every icon on friendly players and pets.";
+L["Icon mode"] = "Icon mode";
+L["Arenas & battlegrounds only"] = "Arenas & battlegrounds only";
+L["Hide friendly icons everywhere else."] = "Hide friendly icons everywhere else.";
+L["Identity"] = "Identity";
+L["Unknown player (?)"] = "Unknown player (?)";
+L["A question mark until the player's class or spec is known."] = "A question mark until the player's class or spec is known.";
+L["A question mark until the player's class or spec is known. Greyed out while class, spec, healer and tank icons are all off."] = "A question mark until the player's class or spec is known. Greyed out while class, spec, healer and tank icons are all off.";
+L["Class icon"] = "Class icon";
+L["With spec icons on, a new player shows the class first, then the spec after the delay set in Advanced."] = "With spec icons on, a new player shows the class first, then the spec after the delay set in Advanced.";
+L["Spec icon"] = "Spec icon";
+L["Shown once the player's talents are known. Healer and tank icons take priority when they are on."] = "Shown once the player's talents are known. Healer and tank icons take priority when they are on.";
+L["Healer icon"] = "Healer icon";
+L["Tank icon"] = "Tank icon";
+L["Pet icons"] = "Pet icons";
+L["Flag carrier icon"] = "Flag carrier icon";
+L["Names"] = "Names";
+L["Name under icon"] = "Name under icon";
+L["Name even without an icon"] = "Name even without an icon";
+L["Also names players who have no icon. Needs \"Name under icon\"."] = "Also names players who have no icon. Needs \"Name under icon\".";
+L["Size & Position"] = "Size & Position";
+L["Icon size"] = "Icon size";
+L["Size of the ?, class, spec and tank icons. Healer, pet and flag icons have their own size."] = "Size of the ?, class, spec and tank icons. Healer, pet and flag icons have their own size.";
+L["Healer icon size"] = "Healer icon size";
+L["Pet icon size"] = "Pet icon size";
+L["Flag icon size"] = "Flag icon size";
+L["Move up / down"] = "Move up / down";
+L["Move left / right"] = "Move left / right";
+L["Crowd Control & Auras"] = "Crowd Control & Auras";
+L["Show crowd control"] = "Show crowd control";
+L["The icon becomes the active CC while it lasts. CC always wins over buffs and debuffs."] = "The icon becomes the active CC while it lasts. CC always wins over buffs and debuffs.";
+L["Countdown in the icon"] = "Countdown in the icon";
+L["Buff & debuff lists"] = "Buff & debuff lists";
+L["Let the spells you list below take the icon's place while active."] = "Let the spells you list below take the icon's place while active.";
+L["Use buff list"] = "Use buff list";
+L["Buff spell IDs"] = "Buff spell IDs";
+L["Use debuff list"] = "Use debuff list";
+L["Debuff spell IDs"] = "Debuff spell IDs";
+L["Enemy Plates"] = "Enemy Plates";
+L["Read every enemy at a glance: class, spec, role and crowd control."] = "Read every enemy at a glance: class, spec, role and crowd control.";
+L["Enemy icons"] = "Enemy icons";
+L["Master switch for every icon on enemy players and pets. Arena numbers still show, and enemy tracking sleeps while off."] = "Master switch for every icon on enemy players and pets. Arena numbers still show, and enemy tracking sleeps while off.";
+L["Hide enemy icons everywhere else."] = "Hide enemy icons everywhere else.";
+L["Arena numbers (1-5)"] = "Arena numbers (1-5)";
+L["Shows Arena 1 to 5 on enemy plates in arenas."] = "Shows Arena 1 to 5 on enemy plates in arenas.";
+L["Shown once the player's talents are known."] = "Shown once the player's talents are known.";
+L["Also names enemy players who have no icon. Needs \"Name under icon\"."] = "Also names enemy players who have no icon. Needs \"Name under icon\".";
+L["Advanced"] = "Advanced";
+L["Shared by Friendly and Enemy plates."] = "Shared by Friendly and Enemy plates.";
+L["Class/Spec Memory"] = "Class/Spec Memory";
+L["Remember class and spec between sessions"] = "Remember class and spec between sessions";
+L["Remembers the class, spec and role you have seen for each player, so their icon is back after a reload, a logout or a loading screen - no mouseover needed. Stored by player GUID, so it survives a duel, a cross-faction battleground and a faction change. Anything new always overwrites it: a mouseover, an inspection, a talent spell, a guessed spec. Off by default. Turning it off stops using and updating the memory but keeps what is already stored; the button below deletes it. Changing this reloads your UI."] = "Remembers the class, spec and role you have seen for each player, so their icon is back after a reload, a logout or a loading screen - no mouseover needed. Stored by player GUID, so it survives a duel, a cross-faction battleground and a faction change. Anything new always overwrites it: a mouseover, an inspection, a talent spell, a guessed spec. Off by default. Turning it off stops using and updating the memory but keeps what is already stored; the button below deletes it. Changing this reloads your UI.";
+L["awesome_wotlk"] = "awesome_wotlk";
+L["Use awesome_wotlk nameplate units"] = "Use awesome_wotlk nameplate units";
+L["Needs the FreakySphere or a compatible awesome_wotlk client patch (switched on automatically the first time it is found). Every visible player gets icons right away, no mouseover needed. Greyed out without compatible support."] = "Needs the FreakySphere or a compatible awesome_wotlk client patch (switched on automatically the first time it is found). Every visible player gets icons right away, no mouseover needed. Greyed out without compatible support.";
+L["|cffff3b3bWARMANE AND OTHER SERVERS THAT FORBID CLIENT MODIFICATIONS ARE NOT COMPATIBLE WITH awesome_wotlk OR ANY CLIENT PATCH. DO NOT INSTALL THE PATCH ON THOSE SERVERS: IT WILL NOT WORK THERE AND CAN COST YOU YOUR ACCOUNT. OPlates NEEDS NO CLIENT MODIFICATION AND RUNS FINE WITHOUT IT.|r"] = "|cffff3b3bWARMANE AND OTHER SERVERS THAT FORBID CLIENT MODIFICATIONS ARE NOT COMPATIBLE WITH awesome_wotlk OR ANY CLIENT PATCH. DO NOT INSTALL THE PATCH ON THOSE SERVERS: IT WILL NOT WORK THERE AND CAN COST YOU YOUR ACCOUNT. OPlates NEEDS NO CLIENT MODIFICATION AND RUNS FINE WITHOUT IT.|r";
+L["Class to Spec"] = "Class to Spec";
+L["Show the class first"] = "Show the class first";
+L["Keep the class icon briefly before the spec replaces it. Off: switch at once. Friendly players only, while Class icon and Spec icon are both on."] = "Keep the class icon briefly before the spec replaces it. Off: switch at once. Friendly players only, while Class icon and Spec icon are both on.";
+L["Delay (seconds)"] = "Delay (seconds)";
+L["How long the class icon stays before the spec replaces it."] = "How long the class icon stays before the spec replaces it.";
+L["Spec guessing"] = "Spec guessing";
+L["Guess a spec from common spells"] = "Guess a spec from common spells";
+L["Show a spec from spells every spec of that class can cast - Frostbolt, Fireball, Shadow Bolt - when no talent spell has revealed the real spec yet. The guess is replaced the moment a talent spell proves a different spec, and it never replaces one. Off by default: a guess can be wrong."] = "Show a spec from spells every spec of that class can cast - Frostbolt, Fireball, Shadow Bolt - when no talent spell has revealed the real spec yet. The guess is replaced the moment a talent spell proves a different spec, and it never replaces one. Off by default: a guess can be wrong.";
+L["Diminishing Returns"] = "Diminishing Returns";
+L["Reset window (seconds)"] = "Reset window (seconds)";
+L["How long a crowd-control category stays on diminishing returns before it resets. Every server decides this itself and the real window drifts between 15 and 20 seconds, so no single number is right everywhere. Lower it if icons still show a reduced duration after the effect should have reset; raise it if they snap back to full too early."] = "How long a crowd-control category stays on diminishing returns before it resets. Every server decides this itself and the real window drifts between 15 and 20 seconds, so no single number is right everywhere. Lower it if icons still show a reduced duration after the effect should have reset; raise it if they snap back to full too early.";
+
+-- Class/Spec Memory: the explicit delete button and its confirmation.
+L["Delete all saved player information"] = "Delete all saved player information";
+L["Delete all saved player information?"] = "Delete all saved player information?";
+L["Every stored class, spec and role is deleted for all players. This cannot be undone."] = "Every stored class, spec and role is deleted for all players. This cannot be undone.";
+L["Removes every class, spec and role stored for every player, from this and every earlier session. Asks for confirmation first. This cannot be undone."] = "Removes every class, spec and role stored for every player, from this and every earlier session. Asks for confirmation first. This cannot be undone.";
+L["Yes"] = "Yes";
+L["No"] = "No";
+L["|cffff6060All saved player information was deleted.|r"] = "|cffff6060All saved player information was deleted.|r";

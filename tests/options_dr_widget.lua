@@ -98,6 +98,26 @@ check("not disabled", widget.disabled, nil)
 -- the default the widget will show before anyone touches it
 check("default from profile", OPlates.db.profile.nameplates.drResetSeconds, 18.1)
 
+-- v1.15: the weak-signal toggle lives on the same page
+local guessing = advanced.args.guessing
+assert(guessing, "Spec guessing group is missing from Advanced")
+check("guessing inline", guessing.inline, true)
+check("guessing name", guessing.name, "Spec guessing")
+check("guessing after DR", guessing.order > diminishing.order, true)
+
+local weak = guessing.args and guessing.args.weakSpecSignals
+assert(weak, "weakSpecSignals widget missing")
+check("weak type", weak.type, "toggle")
+check("weak width", weak.width, "full")
+check("weak name", weak.name, "Guess a spec from common spells")
+check("weak has a tooltip", type(weak.desc) == "string" and #weak.desc > 80, true)
+check("weak is off before anyone touches it", weak.get(), false)
+
+weak.set(nil, true)
+check("weak setter stores true", OPlates.db.profile.nameplates.weakSpecSignals, true)
+weak.set(nil, false)
+check("weak setter stores false", OPlates.db.profile.nameplates.weakSpecSignals, false)
+
 if failures > 0 then
     error(failures .. " check(s) failed")
 end

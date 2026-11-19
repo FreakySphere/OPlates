@@ -8,7 +8,7 @@ local _, addon = ...
 --           his talent spells in the combat log > LFD role > self-cast healer aura
 --   CC:     his debuffs while he is visible to this client (~100 yd); farther
 --           away (other zone/instance) only his own OPlates can report it ("OPlates").
-local ICON_SIZE = 48
+local ICON_SIZE = 65
 local PREFIX = "OPlates"
 local MAX_FRAMES = 5
 local frames = {}   -- [i] = visual alert frame (created on first use)
@@ -861,7 +861,7 @@ end
 
 function OPlates:ResetHealerInCrowdControlPositions()
     local cfg = Cfg()
-    cfg.healerInCrowdControlOffsetX, cfg.healerInCrowdControlOffsetY = 0, 250
+    cfg.healerInCrowdControlOffsetX, cfg.healerInCrowdControlOffsetY = 400, 115
     cfg.healerInCrowdControlPositions = nil
     cfg.lastModified = GetTime()
     self:UpdateHealerInCrowdControl()

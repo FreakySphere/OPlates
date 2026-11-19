@@ -4,8 +4,8 @@ title: "OPlates"
 type: software
 authors:
   - name: "FreakySphere"
-version: "1.12"
-date-released: "2026-11-03"
+version: "1.20"
+date-released: "2026-11-20"
 url: "https://github.com/FreakySphere/OPlates"
 repository-code: "https://github.com/FreakySphere/OPlates"
 license: "GPL-3.0-or-later"

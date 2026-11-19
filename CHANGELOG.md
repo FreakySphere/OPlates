@@ -4,9 +4,29 @@ All notable public changes to OPlates are documented here.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). OPlates uses public release numbers beginning with `1.00`.
 
-## [Unreleased]
+## [1.20] - 2026-11-20
 
-No public changes yet.
+**This is the biggest update OPlates has had.** It remembers players, reads hybrid builds properly, follows druid forms, and the crowd-control layer was audited spell by spell.
+
+### Added
+
+- **Class/Spec Memory.** Class, spec and role are stored per player, per side, and come back after `/reload`, logout and login. Separate SavedVariables, its own Delete button, and turning the option off never wipes anything.
+- **Spec Guessing.** Shared spells — Fireball, Shadow Word: Pain, Sinister Strike — fill in a spec the combat log cannot prove. Switchable per side; a real read locks it.
+- **Hybrid builds.** The deepest talent tree names the spec: Preg 0/28/43 is Retribution, rogue 38/33 is Assassination, DK 43/26/2 is Blood. Builds nobody plays no longer weaken the model.
+- **Druid forms.** Moonkin Form is Balance, Tree of Life is Restoration, and a feral talent build keeps cat or bear through every shapeshift.
+- **`?` is off by default.** A fresh install draws no question mark. It locks itself when no class/spec/healer/tank icon is enabled, and never appears on pets.
+
+### Fixed
+
+- A buff that shares a CC name (Mage Impact) no longer draws a stun on the mage or advances his stun DR.
+- The DR window now runs from the CC's removal, and a refresh keeps its step.
+- Slider fillers draw at the right width the first time an options page opens.
+- Removed a duplicate refresh on target change.
+
+### Changed
+
+- New defaults: pet 0.5, flag 2.0, healer 1.5 on both sides; enemy offset 11; enemy name off; Healer CC 65 / 400 / 115.
+- `OPlatesSpecMemory` is now a SavedVariable.
 
 ## [1.14] - 2026-11-15
 

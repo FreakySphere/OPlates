@@ -286,12 +286,21 @@ function W.Slider(parent, model, width)
         return tostring(math.floor(v + 0.5))
     end
 
-    local function updateFill()
+    -- The slider's width is resolved by the client's layout pass, which runs
+    -- AFTER the page's first Refresh(). GetWidth() is still 0 there, so the
+    -- fill stayed 0 px wide until some option change refreshed the page again
+    -- (the "empty fillers until you click something" bug). OnSizeChanged is
+    -- the moment the width becomes real, so the fill is set there as well.
+    local function updateFill(width)
         local v = slider:GetValue()
         local frac = (max > min) and ((v - min) / (max - min)) or 0
-        local w = slider:GetWidth()
+        local w = width or slider:GetWidth()
         if w and w > 0 then fill:SetWidth(math.max(1, frac * w)) end
     end
+
+    slider:SetScript("OnSizeChanged", function(_, width)
+        if width and width > 0 then updateFill(width) end
+    end)
 
     local widget = { frame = f, slider = slider }
     local sliding, updating, last = false, false, nil

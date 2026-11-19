@@ -12,7 +12,11 @@ local function get(info)
 end
 
 local function set(info, value)
-    OPlates.db.profile.nameplates[info[#info]] = value
+    local cfg = OPlates.db.profile.nameplates
+    cfg[info[#info]] = value
+    -- turning the last identity icon off unchecks "Unknown player (?)" and
+    -- greys it out; turning one back on leaves it unchecked on purpose
+    if addon.SanitizeUnknownIcons then addon.SanitizeUnknownIcons(cfg) end
     refresh()
 end
 
@@ -67,30 +71,22 @@ local AWESOME_LINK = "https://github.com/FreakySphere/awesome_wotlk/releases/lat
 -- the red line every banner carries. Servers that forbid client patches are
 -- not a corner case: installing awesome_wotlk there does nothing useful and can
 -- cost the player their account, so the warning is part of the message itself.
-local WOTLK_WARN = "|cffff3b3bWARMANE AND OTHER SERVERS THAT FORBID CLIENT MODIFICATIONS ARE NOT "
-    .. "COMPATIBLE WITH awesome_wotlk OR ANY CLIENT PATCH. DO NOT INSTALL IT THERE.|r"
+local WOTLK_WARN = L["|cffff3b3bWARMANE AND OTHER SERVERS THAT FORBID CLIENT MODIFICATIONS ARE NOT COMPATIBLE WITH awesome_wotlk OR ANY CLIENT PATCH. DO NOT INSTALL IT THERE.|r"]
 
 -- hold is how long a banner stays on screen before it fades out.
 -- DISABLED has no hold, so its Yes/No prompt never auto-fades.
 local BANNERS = {
     MISSING = { r = 1, g = 0.27, b = 0.27, hold = 20, link = true,
         title = "awesome_wotlk patch not detected",
-        text = "Your client is unpatched, so players reveal their class only after you mouseover them. "
-            .. "The free FreakySphere awesome_wotlk client patch gives every visible player class colors, "
-            .. "icons and borders instantly, with no mouseover at all. Copy the link below if you want it. "
-            .. "OPlates runs fine without it.\n\n" .. WOTLK_WARN },
+        text = L["Your client is unpatched, so players reveal their class only after you mouseover them. The free FreakySphere awesome_wotlk client patch gives every visible player class colors, icons and borders instantly, with no mouseover at all. Copy the link below if you want it. OPlates runs fine without it."] .. "\n\n" .. WOTLK_WARN },
     FOUND = { r = 0.25, g = 1, b = 0.4, hold = 20,
         title = "awesome_wotlk patch detected!",
         -- the chat line is a running status, not a one-time greeting.
         chat = "awesome_wotlk patch detected",
-        text = "OPlates now reads nameplate units straight from your client: every visible player gets class "
-            .. "colors, icons and borders instantly, no mouseover needed. You can switch this off in "
-            .. "/op > Advanced.\n\n" .. WOTLK_WARN },
+        text = L["OPlates now reads nameplate units straight from your client: every visible player gets class colors, icons and borders instantly, no mouseover needed. You can switch this off in /op > Advanced."] .. "\n\n" .. WOTLK_WARN },
     DISABLED = { r = 1, g = 0.27, b = 0.27, ask = true,
         title = "awesome_wotlk is installed, but switched off",
-        text = "Your client has the awesome_wotlk patch, but OPlates is not using its nameplate units, so you "
-            .. "are missing instant class colors, icons and borders on every visible player. Turn it on now?"
-            .. "\n\n" .. WOTLK_WARN },
+        text = L["Your client has the awesome_wotlk patch, but OPlates is not using its nameplate units, so you are missing instant class colors, icons and borders on every visible player. Turn it on now?"] .. "\n\n" .. WOTLK_WARN },
 }
 -- exposed so tests/awesome_banner.lua can check the wording without a client.
 addon.AwesomeBanners = BANNERS
@@ -240,11 +236,89 @@ local function ShowBanner(kind)
 end
 addon.ShowAwesomeBanner = ShowBanner
 
+---------------------------------------------------------------------------
+-- "Delete all saved player information"
+--
+-- Deleting is destructive and cannot be undone, so it never happens on a
+-- toggle: the button opens a centred, top-strata confirmation with Yes / No.
+-- Escape and "No" both cancel; "Yes" is the only path that wipes anything.
+---------------------------------------------------------------------------
+local deleteDialog
+
+local function WipeSavedPlayers()
+    if addon.SpecMemory then addon.SpecMemory:Reset() end
+    local scanner = addon.TalentScanner
+    if scanner and scanner.ClearStore then scanner:ClearStore() end
+    if addon.ClearLearnedSpecs then addon.ClearLearnedSpecs() end
+    -- Re-render what is on screen, but do NOT queue fresh inspections: those
+    -- would write the visible players straight back into the memory that was
+    -- just deleted. The addon keeps learning normally from the next cast,
+    -- mouseover or roster update.
+    if addon.RequestRefreshNameplateOverlays then
+        addon:RequestRefreshNameplateOverlays()
+    elseif OPlates and OPlates.RefreshNameplateOverlays then
+        OPlates:RefreshNameplateOverlays()
+    end
+end
+
+local function ShowDeleteDialog()
+    if not deleteDialog then
+        local f = CreateFrame("Frame", "OPlatesDeletePlayersDialog", UIParent)
+        f:SetFrameStrata("FULLSCREEN_DIALOG")
+        f:SetToplevel(true)
+        f:SetWidth(400)
+        f:SetHeight(170)
+        f:SetPoint("CENTER", UIParent, "CENTER", 0, 0)
+        f:SetBackdrop({ bgFile = "Interface\\DialogFrame\\UI-DialogBox-Background",
+            edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border", tile = true, tileSize = 32, edgeSize = 16,
+            insets = { left = 4, right = 4, top = 4, bottom = 4 } })
+        f:SetBackdropColor(0, 0, 0, 0.96)
+        f:SetBackdropBorderColor(0.85, 0.2, 0.2, 1)
+        f:EnableMouse(true)
+        f:SetScript("OnShow", function(self) self:Raise() end)
+
+        f.title = f:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+        f.title:SetPoint("TOP", f, "TOP", 0, -16)
+        f.title:SetTextColor(1, 0.35, 0.35)
+        f.title:SetText(L["Delete all saved player information?"])
+
+        f.text = f:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+        f.text:SetPoint("TOP", f.title, "BOTTOM", 0, -10)
+        f.text:SetWidth(348)
+        f.text:SetJustifyH("CENTER")
+        f.text:SetText(L["Every stored class, spec and role is deleted for all players. This cannot be undone."])
+
+        f.yes = CreateFrame("Button", nil, f, "UIPanelButtonTemplate")
+        f.yes:SetWidth(120); f.yes:SetHeight(22); f.yes:SetText(L["Yes"])
+        f.yes:SetPoint("BOTTOM", f, "BOTTOM", -66, 16)
+        f.yes:SetScript("OnClick", function()
+            WipeSavedPlayers()
+            f:Hide()
+            addon.PRINT(L["|cffff6060All saved player information was deleted.|r"])
+        end)
+
+        f.no = CreateFrame("Button", nil, f, "UIPanelButtonTemplate")
+        f.no:SetWidth(120); f.no:SetHeight(22); f.no:SetText(L["No"])
+        f.no:SetPoint("BOTTOM", f, "BOTTOM", 66, 16)
+        f.no:SetScript("OnClick", function() f:Hide() end)
+
+        -- Escape closes it, like every other dialog in the client. The table is
+        -- created by FrameXML; guard it so a stripped UI can never break the
+        -- button (No still closes the dialog).
+        if type(UISpecialFrames) == "table" then
+            table.insert(UISpecialFrames, "OPlatesDeletePlayersDialog")
+        end
+        deleteDialog = f
+    end
+    deleteDialog:Show()
+end
+addon.ShowDeletePlayersDialog = ShowDeleteDialog
+
 -- The chat line and the on-screen banner are deliberately independent. The
 -- banner is a one-time notice, but the patch state is worth one line in the log
 -- on EVERY login, so a player can always confirm what OPlates detected without
 -- opening the settings. The short Warmane note rides along on all three.
-local WOTLK_SHORT = "|cffff3b3bWarmane: patch not allowed|r"
+local WOTLK_SHORT = L["|cffff3b3bWarmane: patch not allowed|r"]
 
 local function ChatNotice(kind)
     local spec = BANNERS[kind]
@@ -298,11 +372,11 @@ local function awesomeStatus()
     local cfg = OPlates.db.profile.nameplates
     local mode = nil
     if scanner and scanner.DetectAwesomeWotlk then mode = scanner:DetectAwesomeWotlk() end
-    local patch = mode and "|cff40ff40detected|r" or "|cffff6060not detected|r"
-    local active = scanner and scanner.plateMode and "|cff40ff40in use|r" or "not in use"
+    local patch = mode and L["|cff40ff40detected|r"] or L["|cffff6060not detected|r"]
+    local active = scanner and scanner.plateMode and L["|cff40ff40in use|r"] or L["not in use"]
     -- third line is the corner note in the main window, so it stays four words.
-    return "awesome_wotlk patch: " .. patch .. "\nNameplate units: "
-        .. (cfg.useAwesomeWotlkNameplateUnits and active or "off")
+    return L["awesome_wotlk patch: "] .. patch .. "\n" .. L["Nameplate units: "]
+        .. (cfg.useAwesomeWotlkNameplateUnits and active or L["off"])
         .. "\n|cffff3b3bWarmane: patch not allowed|r"
 end
 -- also shown in the top-right corner of the main options window.
@@ -310,9 +384,9 @@ addon.AwesomeStatusText = awesomeStatus
 
 -- display modes of both sides. The three aura modes draw only CC /
 -- whitelisted aura icons (no ?, class, spec, role, pet or flag icon).
-local DISPLAY_MODES = { ALL = "Everything", HEALER = "Healers only", TANK = "Tanks only", CLASS = "Class icons only",
-    CLASS_SPEC = "Spec icons only", PET = "Pets only", FLAG = "Flag carriers only",
-    CC_ONLY = "Crowd control only", BUFFS_ONLY = "Buffs only", DEBUFFS_ONLY = "Debuffs only" }
+local DISPLAY_MODES = { ALL = L["Everything"], HEALER = L["Healers only"], TANK = L["Tanks only"], CLASS = L["Class icons only"],
+    CLASS_SPEC = L["Spec icons only"], PET = L["Pets only"], FLAG = L["Flag carriers only"],
+    CC_ONLY = L["Crowd control only"], BUFFS_ONLY = L["Buffs only"], DEBUFFS_ONLY = L["Debuffs only"] }
 -- the order the Icon mode list shows its entries (saved keys unchanged).
 -- This AceConfig version has no select "sorting" member, so the themed window
 -- reads the order from here (addon.SelectOrder, keyed by the values table).
@@ -321,8 +395,8 @@ local DISPLAY_MODE_ORDER = { "ALL", "CLASS", "CC_ONLY", "CLASS_SPEC", "HEALER", 
 addon.SelectOrder = addon.SelectOrder or setmetatable({}, { __mode = "k" })
 addon.SelectOrder[DISPLAY_MODES] = DISPLAY_MODE_ORDER
 addon.DisplayModeOrder = DISPLAY_MODE_ORDER
-local DISPLAY_MODE_DESC = "Pick which icons may appear. \"Crowd control only\" shows CC icons only (gone the moment the CC ends). \"Buffs only\" / \"Debuffs only\" show your listed spells (plus CC when \"Show crowd control\" is on). Options a mode doesn't use turn grey and keep their values."
-local TIMER_DESC = "Seconds left, in the center of CC and aura icons. White from 1 minute, yellow under 1 minute, red from 5 seconds (then tenths). Only for effects with a known duration."
+local DISPLAY_MODE_DESC = L["Pick which icons may appear. \"Crowd control only\" shows CC icons only (gone the moment the CC ends). \"Buffs only\" / \"Debuffs only\" show your listed spells (plus CC when \"Show crowd control\" is on). Options a mode doesn't use turn grey and keep their values."]
+local TIMER_DESC = L["Seconds left, in the center of CC and aura icons. White from 1 minute, yellow under 1 minute, red from 5 seconds (then tenths). Only for effects with a known duration."]
 
 -- grey + lock rules. A locked option keeps its saved value and is
 -- ignored while locked (Overlay AuraSettings / display modes).
@@ -429,10 +503,10 @@ end
 local function FilterButton(side, kind, order)
     return {
         order = order, type = "input", dialogControl = "OPlatesFilterButton",
-        name = kind == "class" and "Class Filters" or "Spec Filters",
+        name = kind == "class" and L["Class Filters"] or L["Spec Filters"],
         desc = kind == "class"
-            and "Choose which classes show their class icon. A hidden class still shows its spec, healer/tank, CC and aura icons."
-            or "Choose which specs show their spec icon. A hidden spec shows the class icon instead (when class icons are on and that class is not hidden).",
+            and L["Choose which classes show their class icon. A hidden class still shows its spec, healer/tank, CC and aura icons."]
+            or L["Choose which specs show their spec icon. A hidden spec shows the class icon instead (when class icons are on and that class is not hidden)."],
         arg = side .. ":" .. kind,
         get = function() return "" end,
         set = function() end,
@@ -449,20 +523,20 @@ addon.GetWotLKNameplateOptions = function(order)
         order = order,
         type = "group",
         childGroups = "tab",
-        name = "Nameplates",
+        name = L["Nameplates"],
         get = get,
         set = set,
         args = {
             friendly = {
                 order = 1,
                 type = "group",
-                name = "Friendly Plates",
-                desc = "Clean circular icons for your allies.",
+                name = L["Friendly Plates"],
+                desc = L["Clean circular icons for your allies."],
                 args = {
-                    general = inline("Essentials", 1, {
-                        classIconsEnabled = { order = 1, type = "toggle", width = "full", name = "Friendly icons", desc = "Master switch for every icon on friendly players and pets." },
+                    general = inline(L["Essentials"], 1, {
+                        classIconsEnabled = { order = 1, type = "toggle", width = "full", name = L["Friendly icons"], desc = L["Master switch for every icon on friendly players and pets."] },
                         friendlyDisplayMode = {
-                            order = 2, type = "select", name = "Icon mode",
+                            order = 2, type = "select", name = L["Icon mode"],
                             values = DISPLAY_MODES,
                             desc = DISPLAY_MODE_DESC,
                             set = function(_, value)
@@ -472,57 +546,59 @@ addon.GetWotLKNameplateOptions = function(order)
                                 refresh()
                             end,
                         },
-                        hideOutsidePvP = { order = 4, type = "toggle", width = "full", name = "Arenas & battlegrounds only", desc = "Hide friendly icons everywhere else." },
+                        hideOutsidePvP = { order = 4, type = "toggle", width = "full", name = L["Arenas & battlegrounds only"], desc = L["Hide friendly icons everywhere else."] },
                     }),
-                    identity = inline("Identity", 2, {
-                        showUnknownFriendly = { order = 1, type = "toggle", width = "full", name = "Unknown player (?)", desc = "A question mark until the player's class or spec is known." },
-                        showClassIcon = { order = 2, type = "toggle", width = "double", name = "Class icon", desc = "With spec icons on, a new player shows the class first, then the spec after the delay set in Advanced." },
+                    identity = inline(L["Identity"], 2, {
+                        showUnknownFriendly = { order = 1, type = "toggle", width = "full", name = L["Unknown player (?)"],
+                            desc = L["A question mark until the player's class or spec is known. Greyed out while class, spec, healer and tank icons are all off."],
+                            disabled = function() return addon.UnknownIconLocked(OPlates.db.profile.nameplates, false) end },
+                        showClassIcon = { order = 2, type = "toggle", width = "double", name = L["Class icon"], desc = L["With spec icons on, a new player shows the class first, then the spec after the delay set in Advanced."] },
                         classFilterButton = FilterButton("friendly", "class", 2.1),
-                        showSpec = { order = 3, type = "toggle", width = "double", name = "Spec icon", desc = "Shown once the player's talents are known. Healer and tank icons take priority when they are on." },
+                        showSpec = { order = 3, type = "toggle", width = "double", name = L["Spec icon"], desc = L["Shown once the player's talents are known. Healer and tank icons take priority when they are on."] },
                         specFilterButton = FilterButton("friendly", "spec", 3.1),
-                        useHealerIcon = { order = 6, type = "toggle", width = "full", name = "Healer icon" },
-                        useTankIcon = { order = 7, type = "toggle", width = "full", name = "Tank icon" },
-                        petIconsEnabled = { order = 8, type = "toggle", width = "full", name = "Pet icons" },
-                        useFlagCarrierIcon = { order = 9, type = "toggle", width = "full", name = "Flag carrier icon" },
+                        useHealerIcon = { order = 6, type = "toggle", width = "full", name = L["Healer icon"] },
+                        useTankIcon = { order = 7, type = "toggle", width = "full", name = L["Tank icon"] },
+                        petIconsEnabled = { order = 8, type = "toggle", width = "full", name = L["Pet icons"] },
+                        useFlagCarrierIcon = { order = 9, type = "toggle", width = "full", name = L["Flag carrier icon"] },
                     }),
-                    appearance = inline("Names", 3, {
-                        showPlayerName = { order = 1, type = "toggle", width = "full", name = "Name under icon" },
-                        showNameWithoutIcon = { order = 2, type = "toggle", width = "full", name = "Name even without an icon",
-                            desc = "Also names players who have no icon. Needs \"Name under icon\".",
+                    appearance = inline(L["Names"], 3, {
+                        showPlayerName = { order = 1, type = "toggle", width = "full", name = L["Name under icon"] },
+                        showNameWithoutIcon = { order = 2, type = "toggle", width = "full", name = L["Name even without an icon"],
+                            desc = L["Also names players who have no icon. Needs \"Name under icon\"."],
                             disabled = function() return not OPlates.db.profile.nameplates.showPlayerName end },
                     }),
-                    placement = inline("Size & Position", 4, {
-                        classIconSize = { order = 1, type = "range", name = "Icon size", min = 0.5, max = 2, step = 0.05, set = setRange,
-                            desc = "Size of the ?, class, spec and tank icons. Healer, pet and flag icons have their own size." },
-                        healerIconSize = { order = 2, type = "range", name = "Healer icon size", min = 0.5, max = 2, step = 0.05, set = setRange },
-                        petIconSize = { order = 3, type = "range", name = "Pet icon size", min = 0.4, max = 2, step = 0.05, set = setRange },
-                        flagCarrierIconSize = { order = 4, type = "range", name = "Flag icon size", min = 0.5, max = 2.5, step = 0.05, set = setRange },
-                        classIconOffset = { order = 5, type = "range", name = "Move up / down", min = -50, max = 80, step = 1, set = setRange },
-                        classIconHorizontalOffset = { order = 6, type = "range", name = "Move left / right", min = -80, max = 80, step = 1, set = setRange },
+                    placement = inline(L["Size & Position"], 4, {
+                        classIconSize = { order = 1, type = "range", name = L["Icon size"], min = 0.5, max = 2, step = 0.05, set = setRange,
+                            desc = L["Size of the ?, class, spec and tank icons. Healer, pet and flag icons have their own size."] },
+                        healerIconSize = { order = 2, type = "range", name = L["Healer icon size"], min = 0.5, max = 2, step = 0.05, set = setRange },
+                        petIconSize = { order = 3, type = "range", name = L["Pet icon size"], min = 0.4, max = 2, step = 0.05, set = setRange },
+                        flagCarrierIconSize = { order = 4, type = "range", name = L["Flag icon size"], min = 0.5, max = 2.5, step = 0.05, set = setRange },
+                        classIconOffset = { order = 5, type = "range", name = L["Move up / down"], min = -50, max = 80, step = 1, set = setRange },
+                        classIconHorizontalOffset = { order = 6, type = "range", name = L["Move left / right"], min = -80, max = 80, step = 1, set = setRange },
                     }),
-                    aura = inline("Crowd Control & Auras", 5, {
-                        showCrowdControl = { order = 1, type = "toggle", width = "full", name = "Show crowd control", desc = "The icon becomes the active CC while it lasts. CC always wins over buffs and debuffs." },
-                        crowdControlTimer = { order = 1.5, type = "toggle", width = "full", name = "Countdown in the icon",
+                    aura = inline(L["Crowd Control & Auras"], 5, {
+                        showCrowdControl = { order = 1, type = "toggle", width = "full", name = L["Show crowd control"], desc = L["The icon becomes the active CC while it lasts. CC always wins over buffs and debuffs."] },
+                        crowdControlTimer = { order = 1.5, type = "toggle", width = "full", name = L["Countdown in the icon"],
                             desc = TIMER_DESC },
-                        auraEnabled = { order = 2, type = "toggle", width = "full", name = "Buff & debuff lists", desc = "Let the spells you list below take the icon's place while active." },
-                        showBuffs = { order = 3, type = "toggle", width = "full", name = "Use buff list" },
-                        buffWhitelist = { order = 4, type = "input", multiline = 3, width = "full", name = "Buff spell IDs", desc = whitelistDesc("buffWhitelist") },
-                        showDebuffs = { order = 5, type = "toggle", width = "full", name = "Use debuff list" },
-                        debuffWhitelist = { order = 6, type = "input", multiline = 3, width = "full", name = "Debuff spell IDs", desc = whitelistDesc("debuffWhitelist") },
+                        auraEnabled = { order = 2, type = "toggle", width = "full", name = L["Buff & debuff lists"], desc = L["Let the spells you list below take the icon's place while active."] },
+                        showBuffs = { order = 3, type = "toggle", width = "full", name = L["Use buff list"] },
+                        buffWhitelist = { order = 4, type = "input", multiline = 3, width = "full", name = L["Buff spell IDs"], desc = whitelistDesc("buffWhitelist") },
+                        showDebuffs = { order = 5, type = "toggle", width = "full", name = L["Use debuff list"] },
+                        debuffWhitelist = { order = 6, type = "input", multiline = 3, width = "full", name = L["Debuff spell IDs"], desc = whitelistDesc("debuffWhitelist") },
                     }),
                 },
             },
             enemy = {
                 order = 2,
                 type = "group",
-                name = "Enemy Plates",
-                desc = "Read every enemy at a glance: class, spec, role and crowd control.",
+                name = L["Enemy Plates"],
+                desc = L["Read every enemy at a glance: class, spec, role and crowd control."],
                 args = {
-                    general = inline("Essentials", 1, {
-                        enemyIconsEnabled = { order = 0.5, type = "toggle", width = "full", name = "Enemy icons",
-                            desc = "Master switch for every icon on enemy players and pets. Arena numbers still show, and enemy tracking sleeps while off." },
+                    general = inline(L["Essentials"], 1, {
+                        enemyIconsEnabled = { order = 0.5, type = "toggle", width = "full", name = L["Enemy icons"],
+                            desc = L["Master switch for every icon on enemy players and pets. Arena numbers still show, and enemy tracking sleeps while off."] },
                         enemyDisplayMode = {
-                            order = 1, type = "select", name = "Icon mode",
+                            order = 1, type = "select", name = L["Icon mode"],
                             values = DISPLAY_MODES,
                             desc = DISPLAY_MODE_DESC,
                             set = function(_, value)
@@ -532,49 +608,51 @@ addon.GetWotLKNameplateOptions = function(order)
                                 refresh()
                             end,
                         },
-                        hideEnemyOutsidePvP = { order = 2, type = "toggle", width = "full", name = "Arenas & battlegrounds only", desc = "Hide enemy icons everywhere else." },
-                        arenaNumbersEnabled = { order = 3, type = "toggle", width = "full", name = "Arena numbers (1-5)", desc = "Shows Arena 1 to 5 on enemy plates in arenas." },
+                        hideEnemyOutsidePvP = { order = 2, type = "toggle", width = "full", name = L["Arenas & battlegrounds only"], desc = L["Hide enemy icons everywhere else."] },
+                        arenaNumbersEnabled = { order = 3, type = "toggle", width = "full", name = L["Arena numbers (1-5)"], desc = L["Shows Arena 1 to 5 on enemy plates in arenas."] },
                     }),
-                    identity = inline("Identity", 2, {
-                        enemyShowClass = { order = 1, type = "toggle", width = "double", name = "Class icon" },
+                    identity = inline(L["Identity"], 2, {
+                        enemyShowClass = { order = 1, type = "toggle", width = "double", name = L["Class icon"] },
                         enemyClassFilterButton = FilterButton("enemy", "class", 1.1),
-                        enemyShowSpec = { order = 2, type = "toggle", width = "double", name = "Spec icon", desc = "Shown once the player's talents are known." },
+                        enemyShowSpec = { order = 2, type = "toggle", width = "double", name = L["Spec icon"], desc = L["Shown once the player's talents are known."] },
                         enemySpecFilterButton = FilterButton("enemy", "spec", 2.1),
-                        enemyHealerIcon = { order = 3, type = "toggle", width = "full", name = "Healer icon" },
-                        enemyTankIcon = { order = 4, type = "toggle", width = "full", name = "Tank icon" },
-                        enemyPetIcon = { order = 5, type = "toggle", width = "full", name = "Pet icons" },
-                        enemyFlagCarrierIcon = { order = 6, type = "toggle", width = "full", name = "Flag carrier icon" },
-                        enemyShowUnknown = { order = 7, type = "toggle", width = "full", name = "Unknown player (?)", desc = "A question mark until the player's class or spec is known." },
+                        enemyHealerIcon = { order = 3, type = "toggle", width = "full", name = L["Healer icon"] },
+                        enemyTankIcon = { order = 4, type = "toggle", width = "full", name = L["Tank icon"] },
+                        enemyPetIcon = { order = 5, type = "toggle", width = "full", name = L["Pet icons"] },
+                        enemyFlagCarrierIcon = { order = 6, type = "toggle", width = "full", name = L["Flag carrier icon"] },
+                        enemyShowUnknown = { order = 7, type = "toggle", width = "full", name = L["Unknown player (?)"],
+                            desc = L["A question mark until the player's class or spec is known. Greyed out while class, spec, healer and tank icons are all off."],
+                            disabled = function() return addon.UnknownIconLocked(OPlates.db.profile.nameplates, true) end },
                     }),
                     -- same layout as Friendly > Size & position. The saved
                     -- keys enemyIconScale (%) and enemyIconOffsetX/Y are unchanged.
-                    placement = inline("Size & Position", 3, {
-                        enemyIconScale = { order = 1, type = "range", name = "Icon size", min = 0.5, max = 2, step = 0.05,
-                            desc = "Size of the ?, class, spec and tank icons. Healer, pet and flag icons have their own size.",
+                    placement = inline(L["Size & Position"], 3, {
+                        enemyIconScale = { order = 1, type = "range", name = L["Icon size"], min = 0.5, max = 2, step = 0.05,
+                            desc = L["Size of the ?, class, spec and tank icons. Healer, pet and flag icons have their own size."],
                             get = function() return (OPlates.db.profile.nameplates.enemyIconScale or 100) / 100 end,
                             set = function(info, value) setRange(info, math.floor(value * 100 + 0.5)) end },
-                        enemyHealerIconSize = { order = 2, type = "range", name = "Healer icon size", min = 0.5, max = 2, step = 0.05, set = setRange },
-                        enemyPetIconSize = { order = 3, type = "range", name = "Pet icon size", min = 0.4, max = 2, step = 0.05, set = setRange },
-                        enemyFlagCarrierIconSize = { order = 4, type = "range", name = "Flag icon size", min = 0.5, max = 2.5, step = 0.05, set = setRange },
-                        enemyIconOffsetY = { order = 5, type = "range", name = "Move up / down", min = -50, max = 80, step = 1, set = setRange },
-                        enemyIconOffsetX = { order = 6, type = "range", name = "Move left / right", min = -80, max = 80, step = 1, set = setRange },
+                        enemyHealerIconSize = { order = 2, type = "range", name = L["Healer icon size"], min = 0.5, max = 2, step = 0.05, set = setRange },
+                        enemyPetIconSize = { order = 3, type = "range", name = L["Pet icon size"], min = 0.4, max = 2, step = 0.05, set = setRange },
+                        enemyFlagCarrierIconSize = { order = 4, type = "range", name = L["Flag icon size"], min = 0.5, max = 2.5, step = 0.05, set = setRange },
+                        enemyIconOffsetY = { order = 5, type = "range", name = L["Move up / down"], min = -50, max = 80, step = 1, set = setRange },
+                        enemyIconOffsetX = { order = 6, type = "range", name = L["Move left / right"], min = -80, max = 80, step = 1, set = setRange },
                     }),
-                    appearance = inline("Names", 4, {
-                        enemyShowPlayerName = { order = 1, type = "toggle", width = "full", name = "Name under icon" },
-                        enemyShowNameWithoutIcon = { order = 2, type = "toggle", width = "full", name = "Name even without an icon",
-                            desc = "Also names enemy players who have no icon. Needs \"Name under icon\".",
+                    appearance = inline(L["Names"], 4, {
+                        enemyShowPlayerName = { order = 1, type = "toggle", width = "full", name = L["Name under icon"] },
+                        enemyShowNameWithoutIcon = { order = 2, type = "toggle", width = "full", name = L["Name even without an icon"],
+                            desc = L["Also names enemy players who have no icon. Needs \"Name under icon\"."],
                             disabled = function() return not OPlates.db.profile.nameplates.enemyShowPlayerName end },
                     }),
                     -- same options as Friendly, independent saved keys.
-                    aura = inline("Crowd Control & Auras", 5, {
-                        enemyShowCrowdControl = { order = 1, type = "toggle", width = "full", name = "Show crowd control", desc = "The icon becomes the active CC while it lasts. CC always wins over buffs and debuffs." },
-                        enemyCrowdControlTimer = { order = 1.5, type = "toggle", width = "full", name = "Countdown in the icon",
+                    aura = inline(L["Crowd Control & Auras"], 5, {
+                        enemyShowCrowdControl = { order = 1, type = "toggle", width = "full", name = L["Show crowd control"], desc = L["The icon becomes the active CC while it lasts. CC always wins over buffs and debuffs."] },
+                        enemyCrowdControlTimer = { order = 1.5, type = "toggle", width = "full", name = L["Countdown in the icon"],
                             desc = TIMER_DESC },
-                        enemyAuraEnabled = { order = 2, type = "toggle", width = "full", name = "Buff & debuff lists", desc = "Let the spells you list below take the icon's place while active." },
-                        enemyShowBuffs = { order = 3, type = "toggle", width = "full", name = "Use buff list" },
-                        enemyBuffWhitelist = { order = 4, type = "input", multiline = 3, width = "full", name = "Buff spell IDs", desc = whitelistDesc("buffWhitelist") },
-                        enemyShowDebuffs = { order = 5, type = "toggle", width = "full", name = "Use debuff list" },
-                        enemyDebuffWhitelist = { order = 6, type = "input", multiline = 3, width = "full", name = "Debuff spell IDs", desc = whitelistDesc("debuffWhitelist") },
+                        enemyAuraEnabled = { order = 2, type = "toggle", width = "full", name = L["Buff & debuff lists"], desc = L["Let the spells you list below take the icon's place while active."] },
+                        enemyShowBuffs = { order = 3, type = "toggle", width = "full", name = L["Use buff list"] },
+                        enemyBuffWhitelist = { order = 4, type = "input", multiline = 3, width = "full", name = L["Buff spell IDs"], desc = whitelistDesc("buffWhitelist") },
+                        enemyShowDebuffs = { order = 5, type = "toggle", width = "full", name = L["Use debuff list"] },
+                        enemyDebuffWhitelist = { order = 6, type = "input", multiline = 3, width = "full", name = L["Debuff spell IDs"], desc = whitelistDesc("debuffWhitelist") },
                     }),
                 },
             },
@@ -582,26 +660,35 @@ addon.GetWotLKNameplateOptions = function(order)
             advanced = {
                 order = 3,
                 type = "group",
-                name = "Advanced",
-                desc = "Shared by Friendly and Enemy plates.",
+                name = L["Advanced"],
+                desc = L["Shared by Friendly and Enemy plates."],
                 args = {
-                    talents = inline("Talent Memory", 1, {
+                    talents = inline(L["Class/Spec Memory"], 1, {
                         persistentTalentCache = {
-                            order = 1, type = "toggle", width = "full", name = "Remember specs between sessions",
-                            desc = "Keeps learned specs after a reload or logout, for friends and foes. Changing this reloads your UI. Turning it off clears the saved specs.",
+                            order = 1, type = "toggle", width = "full",
+                            name = L["Remember class and spec between sessions"],
+                            desc = L["Remembers the class, spec and role you have seen for each player, so their icon is back after a reload, a logout or a loading screen - no mouseover needed. Stored by player GUID, so it survives a duel, a cross-faction battleground and a faction change. Anything new always overwrites it: a mouseover, an inspection, a talent spell, a guessed spec. Off by default. Turning it off stops using and updating the memory but keeps what is already stored; the button below deletes it. Changing this reloads your UI."],
                             set = function(_, value)
                                 local cfg = OPlates.db.profile.nameplates
                                 if (cfg.persistentTalentCache == true) == value then return end
                                 cfg.persistentTalentCache = value
-                                if not value then OPlatesTalentDB = nil end
+                                -- Never delete anything here: switching the
+                                -- memory off is not a delete. The explicit
+                                -- button below is the only wipe.
                                 ReloadUI()
                             end,
                         },
+                        deleteSavedPlayers = {
+                            order = 2, type = "execute", width = "full",
+                            name = L["Delete all saved player information"],
+                            desc = L["Removes every class, spec and role stored for every player, from this and every earlier session. Asks for confirmation first. This cannot be undone."],
+                            func = function() ShowDeleteDialog() end,
+                        },
                     }),
-                    awesome = inline("awesome_wotlk", 2, {
+                    awesome = inline(L["awesome_wotlk"], 2, {
                         useAwesomeWotlkNameplateUnits = {
-                            order = 1, type = "toggle", width = "full", name = "Use awesome_wotlk nameplate units",
-                            desc = "Needs the FreakySphere or a compatible awesome_wotlk client patch (switched on automatically the first time it is found). Every visible player gets icons right away, no mouseover needed. Greyed out without compatible support.",
+                            order = 1, type = "toggle", width = "full", name = L["Use awesome_wotlk nameplate units"],
+                            desc = L["Needs the FreakySphere or a compatible awesome_wotlk client patch (switched on automatically the first time it is found). Every visible player gets icons right away, no mouseover needed. Greyed out without compatible support."],
                             disabled = function() return not awesomeDetected() end,
                             get = function()
                                 return OPlates.db.profile.nameplates.useAwesomeWotlkNameplateUnits == true and awesomeDetected()
@@ -620,18 +707,31 @@ addon.GetWotLKNameplateOptions = function(order)
                         },
                         awesomeWotlkWarmane = {
                             order = 3, type = "description", width = "full", fontSize = "medium",
-                            name = "|cffff3b3bWARMANE AND OTHER SERVERS THAT FORBID CLIENT MODIFICATIONS ARE "
-                                .. "NOT COMPATIBLE WITH awesome_wotlk OR ANY CLIENT PATCH. DO NOT INSTALL THE "
-                                .. "PATCH ON THOSE SERVERS: IT WILL NOT WORK THERE AND CAN COST YOU YOUR "
-                                .. "ACCOUNT. OPlates NEEDS NO CLIENT MODIFICATION AND RUNS FINE WITHOUT IT.|r",
+                            name = L["|cffff3b3bWARMANE AND OTHER SERVERS THAT FORBID CLIENT MODIFICATIONS ARE NOT COMPATIBLE WITH awesome_wotlk OR ANY CLIENT PATCH. DO NOT INSTALL THE PATCH ON THOSE SERVERS: IT WILL NOT WORK THERE AND CAN COST YOU YOUR ACCOUNT. OPlates NEEDS NO CLIENT MODIFICATION AND RUNS FINE WITHOUT IT.|r"],
                         },
                     }),
-                    transition = inline("Class to Spec", 3, {
-                        classToSpecDelayEnabled = { order = 1, type = "toggle", width = "full", name = "Show the class first", desc = "Keep the class icon briefly before the spec replaces it. Off: switch at once. Friendly players only, while Class icon and Spec icon are both on.", disabled = function() local n = OPlates.db.profile.nameplates return not (n.showClassIcon ~= false and n.showSpec ~= false) end },
-                        classToSpecDelay = { order = 2, type = "range", width = "full", name = "Delay (seconds)", desc = "How long the class icon stays before the spec replaces it.", min = 0.5, max = 3, step = 0.05, set = setRange, disabled = function() local n = OPlates.db.profile.nameplates return not (n.showClassIcon ~= false and n.showSpec ~= false and n.classToSpecDelayEnabled ~= false) end },
+                    transition = inline(L["Class to Spec"], 3, {
+                        classToSpecDelayEnabled = { order = 1, type = "toggle", width = "full", name = L["Show the class first"], desc = L["Keep the class icon briefly before the spec replaces it. Off: switch at once. Friendly players only, while Class icon and Spec icon are both on."], disabled = function() local n = OPlates.db.profile.nameplates return not (n.showClassIcon ~= false and n.showSpec ~= false) end },
+                        classToSpecDelay = { order = 2, type = "range", width = "full", name = L["Delay (seconds)"], desc = L["How long the class icon stays before the spec replaces it."], min = 0.5, max = 3, step = 0.05, set = setRange, disabled = function() local n = OPlates.db.profile.nameplates return not (n.showClassIcon ~= false and n.showSpec ~= false and n.classToSpecDelayEnabled ~= false) end },
                     }),
-                    diminishing = inline("Diminishing Returns", 4, {
-                        drResetSeconds = { order = 1, type = "range", width = "full", name = "Reset window (seconds)", desc = "How long a crowd-control category stays on diminishing returns before it resets. Every server decides this itself and the real window drifts between 15 and 20 seconds, so no single number is right everywhere. Lower it if icons still show a reduced duration after the effect should have reset; raise it if they snap back to full too early.", min = 15, max = 20, step = 0.1, set = setRange },
+                    guessing = inline(L["Spec guessing"], 5, {
+                        weakSpecSignals = {
+                            order = 1, type = "toggle", width = "full",
+                            name = L["Guess a spec from common spells"],
+                            desc = L["Show a spec from spells every spec of that class can cast - Frostbolt, Fireball, Shadow Bolt - when no talent spell has revealed the real spec yet. The guess is replaced the moment a talent spell proves a different spec, and it never replaces one. Off by default: a guess can be wrong."],
+                            get = function() return OPlates.db.profile.nameplates.weakSpecSignals == true end,
+                            set = function(_, value)
+                                OPlates.db.profile.nameplates.weakSpecSignals = value == true
+                                -- guesses appear or disappear at once; proven
+                                -- signatures and inspections are not guesses
+                                -- and keep their icons.
+                                if addon.ClearGuessedSpecs then addon.ClearGuessedSpecs() end
+                                OPlates:NotifyOptions()
+                            end,
+                        },
+                    }),
+                    diminishing = inline(L["Diminishing Returns"], 4, {
+                        drResetSeconds = { order = 1, type = "range", width = "full", name = L["Reset window (seconds)"], desc = L["How long a crowd-control category stays on diminishing returns before it resets. Every server decides this itself and the real window drifts between 15 and 20 seconds, so no single number is right everywhere. Lower it if icons still show a reduced duration after the effect should have reset; raise it if they snap back to full too early."], min = 15, max = 20, step = 0.1, set = setRange },
                     }),
                 },
             },

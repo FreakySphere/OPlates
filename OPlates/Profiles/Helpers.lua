@@ -86,6 +86,12 @@ function OPlates:ImportProfile(data, module)
     end
 
     self:RefreshConfig(); -- TODO: optimize this to only refresh the module that was imported
+    -- an imported setup can carry "Unknown player (?)" on with every identity
+    -- icon off; the full-profile path is sanitised by MigrateProfile, this one
+    -- is not, so do it here for both
+    if addon.SanitizeUnknownIcons and self.db.profile.nameplates then
+        addon.SanitizeUnknownIcons(self.db.profile.nameplates)
+    end
     LibStub("AceConfigRegistry-3.0"):NotifyChange("OPlates"); -- To trigger UI update, e.g., enabled spells in the arena cooldown tracker
     return true;
 end

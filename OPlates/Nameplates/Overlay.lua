@@ -2,6 +2,9 @@ local _, addon = ...
 
 local LibNameplates = LibStub("LibNameplates-1.0", true)
 
+-- uptime for the [STATS] line ("up=...s"): the moment this file loaded.
+addon._sessionStartedAt = addon._sessionStartedAt or (GetTime and GetTime() or 0)
+
 local ICON_SIZE = 40
 local plates = {}
 local cacheByGUID = {}
@@ -68,12 +71,48 @@ local learnedDuration, learnedCount = {}, 0
 local auraGUIDsByName, auraNameByGUID, auraClassByGUID, auraNameCount = {}, {}, {}, 0
 -- next allowed exact upgrade read per GUID (estimate on top).
 local upgradeAt, upgradeCount = {}, 0
-local prevTargetGUID
 local RefreshAll
 local UpdatePlate
 local refreshInProgress = false
 local function D(tag, msg, ...)
     if addon._debugEnabled then addon:DebugLog(tag, msg, ...) end
+end
+
+---------------------------------------------------------------------------
+-- [STATS] window
+--
+-- One summary line every 60 s while debug logging is on. Every counter is
+-- bumped on the real code path (an icon actually changing, a CC/aura/flag being
+-- recorded, a class/spec store being written) and reset when the line prints,
+-- so a capture reads as "what happened in the last minute" instead of thousands
+-- of lines. Nothing here runs when debug logging is off.
+---------------------------------------------------------------------------
+local stats = {
+    every = 60, at = 0,
+    icons = { friendly = {}, enemy = {} },
+    seenF = {}, seenE = {},
+    seenCountF = 0, seenCountE = 0,
+    cleu = 0, cc = 0, ccNew = 0, aura = 0, auraNew = 0, flags = 0,
+    forms = { BEAR = 0, CAT = 0 },
+    -- hybrid bookkeeping: kept = a shallower off-tree talent was refused,
+    -- moved = a deeper (still sub-40-point) talent named the main tree
+    hybridKept = 0, hybridMoved = 0,
+}
+function stats.Bump(tbl, key)
+    key = key or "none"
+    tbl[key] = (tbl[key] or 0) + 1
+end
+function stats.Seen(side, guid)
+    if not guid then return end
+    if side == "enemy" then
+        if not stats.seenE[guid] then
+            stats.seenE[guid] = true
+            stats.seenCountE = stats.seenCountE + 1
+        end
+    elseif not stats.seenF[guid] then
+        stats.seenF[guid] = true
+        stats.seenCountF = stats.seenCountF + 1
+    end
 end
 
 -- Compact logging - track last log time per GUID+tag to reduce spam
@@ -153,16 +192,26 @@ local function FriendlyNeedsSpec(cfg)
     if mode == "ALL" then
         return cfg.showSpec ~= false or cfg.useHealerIcon ~= false or cfg.useTankIcon ~= false
     end
-    return SPEC_MODES[mode] == true
+    -- "Class icons only" needs the store too: a class read from a spell or from
+    -- an inspection is what that mode draws.
+    return SPEC_MODES[mode] == true or mode == "CLASS"
 end
 
 local function EnemyNeedsSpec(cfg)
     if not SideEnabled(cfg, true) then return false end
     local mode = cfg.enemyDisplayMode or "ALL"
     if mode == "ALL" then
+        -- "Class icon" counts: a signature spell is a class source too, and on a
+        -- stock client it is often the ONLY one for a hostile plate with no
+        -- unit token and no bar colour. Without it, turning spec/healer/tank
+        -- off silently stopped classes from being learned as well.
         return cfg.enemyShowSpec == true or cfg.enemyHealerIcon == true or cfg.enemyTankIcon == true
+            or cfg.enemyShowClass == true
     end
-    return SPEC_MODES[mode] == true
+    -- Same for enemies: on a stock client the combat log is the only class
+    -- source for a hostile plate without a unit token, so "Class icons only"
+    -- must keep the store running even though it never draws a spec.
+    return SPEC_MODES[mode] == true or mode == "CLASS"
 end
 
 local function GroupNeedsSpec()
@@ -263,8 +312,12 @@ function addon:RequestRefreshNameplateOverlayGUID(guid)
             end
             if not matched then unmatched[targetGUID] = true end
         end
-        -- Extended from 8 attempts (0.24s) to 50 attempts (5s)
-        if next(unmatched) and f._attempt < 50 then
+        -- 20 attempts (2 s) is enough for LibNameplates to associate a plate
+        -- that is actually on screen. The old 50 (5 s) kept scanning every
+        -- visible plate twice a second for a player who had already left range,
+        -- which is what the Orgrimmar capture showed: 46 attempts and then a
+        -- full refresh for nobody.
+        if next(unmatched) and f._attempt < 20 then
             for targetGUID in pairs(unmatched) do self._pendingOverlayGUIDs[targetGUID] = true end
             return
         end
@@ -363,9 +416,57 @@ local groupSpecByGUID, groupSpecCount = {}, 0
 -- here (never in the inspection cache, so inspection is never blocked) and
 -- used only to draw hostile plates; inspection/group data always wins.
 local enemySpecByGUID, enemySpecByName, enemySpecCount = {}, {}, 0
-local signatureByName
-local SIGNATURE_EVENTS = { SPELL_CAST_SUCCESS = true, SPELL_CAST_START = true, SPELL_AURA_APPLIED = true, SPELL_SUMMON = true }
-local CAT_ICON = "Interface\\Icons\\Ability_Druid_CatForm"
+local friendlySpecByGUID, friendlySpecByName, friendlySpecCount = {}, {}, 0
+-- Render-only merged view for a friendly plate whose class and spec come from
+-- different sources. It must be a STABLE table: FriendlyIconState keeps the
+-- class -> spec deadline on the data it is handed, so a fresh table per render
+-- re-armed that deadline forever. That was the v1.15 bug where a friendly
+-- outsider showed his class and then never his spec.
+local friendlyViewByKey, friendlyViewCount = {}, 0
+local signatureByName, weakByName
+-- Every combat-log subevent that can name a player. Two families behave
+-- differently, and only one of them is always trustworthy:
+--
+--   * ACTOR events name the unit that PERFORMED the action: a cast that starts,
+--     fails or is interrupted, a damage tick, a miss, a drain, an interrupt, a
+--     dispel, a summon. The source is the actor, always.
+--   * EFFECT events name the unit that OWNS the effect. For an AURA that is
+--     the caster when it lands on another unit (a debuff on an enemy, a buff on
+--     a party member: src ~= dst), and the recipient himself when it is a
+--     self-cast, a talent proc, or a party aura the client re-sends on its
+--     recipient (src == dst). A self-cast and a received buff are
+--     indistinguishable there, so src == dst identifies nobody.
+--
+--     A HEAL is different again and is not used at all: the client reports the
+--     unit the health came FROM, not the caster. Field log, 12 times in one
+--     session: "SPELL_HEAL spell=Haunt src=<a hunter> dst=<the warlock>" - it
+--     named a hunter, a warrior, a shaman and a paladin as the warlock who cast
+--     Haunt. The cast of a heal already names the healer, so nothing is lost.
+--
+-- In one sentence: an event may only identify its source when the source is the
+-- unit that performed the action, never when it is the unit that owns or
+-- received the result.
+local SIGNATURE_EVENTS = {
+    -- actor events
+    SPELL_CAST_SUCCESS = true, SPELL_CAST_START = true, SPELL_CAST_FAILED = true,
+    SPELL_DAMAGE = true, SPELL_PERIODIC_DAMAGE = true, SPELL_MISSED = true,
+    SPELL_DRAIN = true, SPELL_LEECH = true, SPELL_INTERRUPT = true,
+    SPELL_DISPEL = true, SPELL_STOLEN = true, SPELL_EXTRA_ATTACKS = true,
+    SPELL_SUMMON = true, SPELL_CREATE = true,
+    -- aura events, trusted only when source ~= destination
+    SPELL_AURA_APPLIED = true, SPELL_AURA_APPLIED_DOSE = true, SPELL_AURA_REFRESH = true,
+}
+
+-- Events that can name the REFLECTOR of somebody else's spell. A warrior's
+-- Spell Reflection is logged as damage FROM the warrior, with the reflected
+-- spell's name: two warriors in one capture "cast" Conflagrate and Chaos Bolt
+-- that way. Damage may still fill a class or a spec for a player we know
+-- nothing about, but it must never CHANGE a class we already proved - only a
+-- cast, an aura on another unit, a summon or a create can do that.
+local REFLECTABLE = {
+    SPELL_DAMAGE = true, SPELL_PERIODIC_DAMAGE = true, SPELL_MISSED = true,
+    SPELL_DRAIN = true, SPELL_LEECH = true, SPELL_EXTRA_ATTACKS = true,
+}
 
 -- Built once, on the first hostile player event, by localized spell name.
 local function Signatures()
@@ -374,42 +475,396 @@ local function Signatures()
     for id, s in pairs(addon.SPEC_SIGNATURES or {}) do
         local spellName = GetSpellInfo(id)
         local icons = addon.SPEC_TREE_ICONS[s[1]]
-        local texture = s[4] == "CAT" and CAT_ICON or icons and icons[s[2]]
+        -- a BEAR/CAT signature names the form: use the form texture, never the
+        -- spec tree icon (the Feral tree icon is the cat, not the bear).
+        local texture = addon.FeralTexture(s[4]) or (icons and icons[s[2]])
         if spellName and texture then
             local old = signatureByName[spellName]
             if old == nil then
                 signatureByName[spellName] = { class = s[1], spec = s[2], strength = s[3], texture = texture,
-                    kind = s[4], role = addon.SPEC_ROLES[s[1]] and addon.SPEC_ROLES[s[1]][s[2]] }
+                    kind = s[4],
+                    role = addon.SPEC_ROLES[s[1]] and addon.SPEC_ROLES[s[1]][s[2]] }
             elseif old and (old.class ~= s[1] or old.spec ~= s[2]) then
                 signatureByName[spellName] = false -- one name, two specs: never trusted
             end
         end
     end
+    -- Entries matched by spell ID, for talents whose localized name the client
+    -- also reports for another class. Numeric keys live beside the name keys.
+    for id, s2 in pairs(addon.SPEC_SIGNATURES_BY_ID or {}) do
+        local icons = addon.SPEC_TREE_ICONS[s2[1]]
+        local texture = addon.FeralTexture(s2[4]) or (icons and icons[s2[2]])
+        if texture then
+            signatureByName[id] = { class = s2[1], spec = s2[2], strength = s2[3], texture = texture,
+                kind = s2[4], role = addon.SPEC_ROLES[s2[1]] and addon.SPEC_ROLES[s2[1]][s2[2]] }
+        end
+    end
     return signatureByName
 end
 
--- Returns true when the stored spec of this hostile player changed.
-local function NoteEnemySpec(guid, name, spellName)
-    local sig = Signatures()[spellName]
+-- Weak signals, built the same way and for the same reason: by localized name,
+-- so a German or Russian client resolves its own spell names.
+local function WeakSignatures()
+    if weakByName then return weakByName end
+    weakByName = {}
+    for id, s in pairs(addon.WEAK_SIGNATURES or {}) do
+        local spellName = GetSpellInfo(id)
+        local icons = addon.SPEC_TREE_ICONS[s[1]]
+        local texture = icons and icons[s[2]]
+        if spellName and texture then
+            local old = weakByName[spellName]
+            if old == nil then
+                weakByName[spellName] = { class = s[1], spec = s[2], texture = texture,
+                    kind = s[3],
+                    role = addon.SPEC_ROLES[s[1]] and addon.SPEC_ROLES[s[1]][s[2]] }
+            elseif old and (old.class ~= s[1] or old.spec ~= s[2]) then
+                weakByName[spellName] = false -- one name, two specs: never trusted
+            end
+        end
+    end
+    return weakByName
+end
+
+-- Remember a spec for the plate's name map, the render-only fallback used when
+-- a plate has no GUID. Shared by the strong and weak paths.
+local function StoreSpecName(name, entry)
+    if type(name) ~= "string" then return end
+    local short = name:match("^[^%-]+") or name
+    local prev = enemySpecByName[short]
+    if prev == false or (prev and prev.guid ~= entry.guid) then
+        enemySpecByName[short] = false
+    else
+        enemySpecByName[short] = entry
+    end
+end
+
+-- 3152 ids parsed once. Three milliseconds on real Lua 5.1, which is too
+-- long to spend inside a combat-log event, so the loading screen pre-warms
+-- it through addon.WarmSpellClasses.
+local spellClassByID
+local function SpellClassMap()
+    if not spellClassByID then
+        spellClassByID = {}
+        for classFile, list in pairs(addon.CLASS_SPELL_IDS or {}) do
+            for n in tostring(list):gmatch("%d+") do spellClassByID[tonumber(n)] = classFile end
+        end
+    end
+    return spellClassByID
+end
+addon.WarmSpellClasses = SpellClassMap
+local function SpellClass(id) return SpellClassMap()[id] end
+
+-- The spec a talent build proved in THIS session, while that build is still the
+-- newest thing we know. It outranks every combat-log guess and every form
+-- signal: a cat-talent druid who shifts to bear to survive is still a cat, a
+-- bear-talent druid who shifts to cat to travel is still a bear, and a Balance
+-- druid who shifts to cat is still Balance. Only a talent that outranks it (see
+-- DeeperSpec: a 40-point talent, or a deeper one) or a form that belongs to one
+-- spec only may replace it - see ForcedSpec. A build restored from DISK does
+-- not lock anything: it is older than what we can see.
+function addon.LockedSpec(guid)
+    local known = guid and cacheByGUID[guid]
+    if known and known.spec and not known.fromDisk then
+        return known.spec, known.feralKind
+    end
+end
+
+-- A talent's row is a lower bound on the points its owner spent in that tree,
+-- so the DEEPEST talent we have ever seen names his MAIN tree - which is what a
+-- player calls his spec. That is the whole hybrid story:
+--
+--   Preg paladin 0/28/43   Protection talents stop at row 5 (25 points) while
+--                          Retribution proves row 8 (40): Sheath of Light
+--                          settles it as RETRIBUTION, never PROTECTION.
+--   rogue 38/33/0          Assassination proves row 7 (35) against Combat's
+--                          row 6 (30) - Assassination is the main tree.
+--   DK 43/26/2 and 24/0/44 the 40+ tree is the main one by definition.
+--
+-- So a shallower off-tree talent never moves a known spec, and a deeper one
+-- always does. A talent at row 8 or deeper (40+ points) is proof on its own:
+-- no build can hold 40 points in two trees (40 + 40 > 71), so the newest one is
+-- a respec - that is what lets a Balance druid who respecced Feral show up as
+-- Feral on his first Mangle even though Starfall is "deeper" than Mangle.
+-- Below 40 points equal depth is a coin flip (a 36/35 build) and the first
+-- answer stays, which is what stopped the 25/46 warlock flickering
+-- Demonology/Affliction inside one teamfight.
+function addon.DeeperSpec(strength, old)
+    if strength >= 8 then return true end
+    return strength > (old and (old.strength or 0) or 0)
+end
+
+-- The shapeshift forms that name a spec (see SPEC_FORM_SPELLS in Common/Feral.lua:
+-- Tree of Life and Moonkin Form). A druid wearing one is that spec and nothing
+-- else can be true. This overrules even a build we read ourselves: the build is
+-- older than the shapeshift, which is exactly what a respec looks like from the
+-- outside. Returns true when it changed something, so the caller redraws.
+function addon.ForcedSpec(spellID, guid, name, spellName, subEvent, destGUID, enemy)
+    local spec = spellID and addon.SPEC_FORM_SPELLS and addon.SPEC_FORM_SPELLS[spellID]
+    if not spec then return false end
+    local icons = addon.SPEC_TREE_ICONS.DRUID
+    local texture = icons and icons[spec]
+    if not texture then return false end
+    local role = addon.RoleForSpec and addon.RoleForSpec("DRUID", spec) or nil
+    -- the build we hold is stale the moment he wears the other spec's form:
+    -- repair the inspection record too, or the next render would read the old
+    -- build back out of the talent cache and undo this
+    local talent = addon._TalentCache and addon._TalentCache[guid]
+    if talent then
+        talent.spec, talent.specTexture, talent.specRole = spec, texture, role
+        talent.feralKind = nil
+    end
+    local known = cacheByGUID[guid]
+    if known then
+        known.spec, known.specTexture, known.specRole = spec, texture, role
+        known.feralKind, known.feralLock, known.fromDisk = nil, nil, nil
+        known.isHealer, known.isTank = role == "HEALER", role == "TANK"
+    end
+    local store = enemy and enemySpecByGUID or friendlySpecByGUID
+    local old = store[guid]
+    if old and old.spec == spec and not old.weak then
+        -- already that spec: nothing to redraw, just keep the memory honest
+        if addon.SpecMemory then addon.SpecMemory:Remember(guid, name, "DRUID", spec, false, role) end
+        return false
+    end
+    if not old then
+        if enemy then
+            enemySpecCount = enemySpecCount + 1
+            if enemySpecCount > 2000 then wipe(enemySpecByGUID); wipe(enemySpecByName); enemySpecCount = 1 end
+        else
+            friendlySpecCount = friendlySpecCount + 1
+            if friendlySpecCount > 2000 then
+                wipe(friendlySpecByGUID); wipe(friendlySpecByName); friendlySpecCount = 1
+                wipe(friendlyViewByKey); friendlyViewCount = 0
+            end
+        end
+    end
+    local entry = { guid = guid, name = name, class = "DRUID", spec = spec,
+        texture = texture, role = role, strength = 10, kind = "SPEC" }
+    store[guid] = entry
+    if enemy then
+        StoreSpecName(name, entry)
+    elseif type(name) == "string" then
+        local short = name:match("^[^%-]+") or name
+        local prev = friendlySpecByName[short]
+        if prev == false or (prev and prev.guid ~= guid) then friendlySpecByName[short] = false
+        else friendlySpecByName[short] = entry end
+    end
+    if addon.SpecMemory then addon.SpecMemory:Remember(guid, name, "DRUID", spec, false, role) end
+    if addon._debugEnabled then
+        addon:DebugLog(enemy and "ENEMYSPEC" or "FRIENDSPEC",
+            "guid=%s name=%s class=DRUID spec=%s strength=10 via=form sub=%s src=%s dst=%s spell=%s respec",
+            tostring(guid), tostring(name), spec, tostring(subEvent), tostring(guid),
+            tostring(destGUID), tostring(spellName))
+    end
+    return true
+end
+
+-- A spec-unique signature (row 9+, i.e. 40+ points in that tree) outranks a
+-- build we read earlier: the read says what he WAS, the talent says what he is
+-- now. Update the render record so the icon changes at once, and retire the
+-- inspection so the next render cannot read the old build back. The CLASS is
+-- never touched - a real read locks the class for good, not the spec.
+function addon.AdoptSpec(guid, name, class, spec, texture, role, kind)
+    local known = guid and cacheByGUID[guid]
+    if not known or not known.spec or known.class ~= class or known.spec == spec then return false end
+    local before = known.spec
+    known.spec, known.specTexture, known.specRole = spec, texture, role
+    known.feralKind, known.feralLock = kind, nil
+    known.fromDisk = nil
+    known.isHealer, known.isTank = role == "HEALER", role == "TANK"
+    local talent = addon._TalentCache and addon._TalentCache[guid]
+    if talent then talent.stale = true end
+    if addon._debugEnabled then
+        addon:DebugLog("SPECREAD", "guid=%s name=%s %s -> %s (a row-8 talent outranks the read)",
+            tostring(guid), tostring(name), tostring(before), tostring(spec))
+    end
+    return true
+end
+
+-- A weak signal fills in a spec ONLY when nothing better is known.
+--   * a real signature is never replaced (old.weak is nil)
+--   * a player never changes class
+--   * a DIFFERENT weak guess of the same class does NOT replace the first one:
+--     two class-wide spells are equally weak evidence, so taking the newest made
+--     a warlock flicker Affliction <-> Destruction on every Corruption/Immolate
+--     tick. The first guess stays until a signature proves one of them.
+--   * the one exception is the druid FORM: a cat/bear signal carries a form,
+--     which is new, exact information (a cat that shifts to bear is a bear now).
+-- Returns true when the stored spec changed.
+local function NoteWeakSpec(guid, name, spellName)
+    local cfg = DB()
+    if not cfg.weakSpecSignals then return false end
+    local sig = WeakSignatures()[spellName]
     if not sig then return false end
+    -- A guess never touches a talent build read this session, in either
+    -- direction: a Balance druid who shifts to cat stays Balance, and a Feral
+    -- who throws a Wrath or a Regrowth stays Feral.
+    if addon.LockedSpec(guid) then return false end
+    -- the client's own class always wins over a spell-id inference
+    local apiClass = auraClassByGUID[guid]
+    if apiClass and apiClass ~= sig.class then return false end
     local old = enemySpecByGUID[guid]
+    if old and not old.weak and not old.classOnly then return false end
+    if old and old.class ~= sig.class then return false end
+    if old and old.spec == sig.spec then
+        -- same guess: only a newly learned FORM is worth a redraw.
+        if sig.kind and old.kind ~= sig.kind then
+            old.kind = sig.kind
+            old.texture = addon.FeralTexture(sig.kind) or old.texture
+            old.role = sig.kind == "BEAR" and "TANK" or sig.role
+            if addon.SpecMemory then addon.SpecMemory:Remember(guid, name, sig.class, sig.spec, true, old.role) end
+            return true
+        end
+        return false
+    end
+    if old and old.classOnly then
+        -- a bare class from a class proof is weaker than a guess: add the spec
+        -- to the existing record instead of starting a second one.
+        -- classOnly MUST be cleared here: leaving it set made every later guess
+        -- take this branch again, so FROST -> FIRE -> FROST flickered and a
+        -- weak guess could even replace a spec a signature had already proven.
+        local role = sig.kind == "BEAR" and "TANK" or sig.role
+        old.spec, old.texture, old.kind = sig.spec,
+            addon.FeralTexture(sig.kind) or sig.texture, sig.kind or "SPEC"
+        old.weak, old.classOnly, old.role = true, nil, role
+        if addon.SpecMemory then addon.SpecMemory:Remember(guid, name, sig.class, sig.spec, true, role) end
+        if addon._debugEnabled then
+            addon:DebugLog("WEAKSPEC", "guid=%s name=%s class=%s spec=%s spell=%s (class-only upgraded)",
+                tostring(guid), tostring(name), sig.class, sig.spec, tostring(spellName))
+        end
+        return true
+    end
+    if old then return false end
+    enemySpecCount = enemySpecCount + 1
+    if enemySpecCount > 2000 then wipe(enemySpecByGUID); wipe(enemySpecByName); enemySpecCount = 1 end
+    local role = sig.kind == "BEAR" and "TANK" or sig.role
+    local entry = { guid = guid, name = name, class = sig.class, spec = sig.spec,
+        texture = addon.FeralTexture(sig.kind) or sig.texture,
+        role = role, strength = 0, kind = sig.kind or "SPEC", weak = true }
+    enemySpecByGUID[guid] = entry
+    StoreSpecName(name, entry)
+    if addon.SpecMemory then addon.SpecMemory:Remember(guid, name, sig.class, sig.spec, true, role) end
+    if addon._debugEnabled then
+        addon:DebugLog("WEAKSPEC", "guid=%s name=%s class=%s spec=%s spell=%s",
+            tostring(guid), tostring(name), sig.class, sig.spec, tostring(spellName))
+    end
+    return true
+end
+
+-- Returns true when the stored spec of this hostile player changed.
+local function NoteEnemySpec(guid, name, spellName, spellID, subEvent, destGUID)
+    if addon.ForcedSpec(spellID, guid, name, spellName, subEvent, destGUID, true) then return true end
+    local sig = Signatures()[spellName] or (spellID and Signatures()[spellID])
+    if not sig then
+        if NoteWeakSpec(guid, name, spellName) then return true end
+        -- Guessing off, or a spell that is not a guess: any spell exactly one
+        -- class can train still proves the CLASS (never the spec). This is what
+        -- gives a hostile player a class icon from the first thing he does even
+        -- with "Guess a spec" disabled.
+        local cls = spellID and SpellClass(spellID) or nil
+        if not cls then return false end
+        -- never contradict a class the client itself reported for this GUID
+        local apiClass = auraClassByGUID[guid]
+        if apiClass and apiClass ~= cls then return false end
+        local old = enemySpecByGUID[guid]
+        if old then return false end -- a spec/class is already known
+        local known = cacheByGUID[guid]
+        if known and known.class and known.class ~= cls then return false end
+        enemySpecCount = enemySpecCount + 1
+        if enemySpecCount > 2000 then wipe(enemySpecByGUID); wipe(enemySpecByName); enemySpecCount = 1 end
+        local entry = { guid = guid, name = name, class = cls, strength = 0, kind = "CLASS", classOnly = true }
+        enemySpecByGUID[guid] = entry
+        StoreSpecName(name, entry)
+        if addon.SpecMemory then addon.SpecMemory:Remember(guid, name, cls, nil, nil, nil) end
+        if addon._debugEnabled then
+            addon:DebugLog("ENEMYSPEC", "guid=%s name=%s class=%s spec=- strength=0 via=spell sub=%s src=%s dst=%s spell=%s",
+                tostring(guid), tostring(name), cls, tostring(subEvent), tostring(guid), tostring(destGUID), tostring(spellName or spellID))
+        end
+        return true
+    end
+    local old = enemySpecByGUID[guid]
+    -- A real read locks the CLASS (above) and silences guesses (NoteWeakSpec),
+    -- but it does NOT freeze the spec: a row-8+ talent is proof of a respec, so
+    -- it always wins. What the read owns is the cat/bear half of a Feral build -
+    -- a cat-talent druid tanking in bear form is still a cat.
+    local lockedSpec = addon.LockedSpec(guid)
+    if lockedSpec then
+        if sig.kind and lockedSpec == "FERAL" then return false end
+        if sig.spec ~= lockedSpec and sig.strength < 8 then return false end
+    end
     if old and old.class == sig.class and old.spec == sig.spec then
+        if old.weak then
+            -- a real signature confirms a weak guess: same icon, now proven
+            old.weak = nil
+            old.classOnly = nil
+            old.strength = sig.strength
+            old.texture = sig.texture
+            old.kind = sig.kind
+            -- the guess just became proof: upgrade the stored record too
+            if addon.SpecMemory then addon.SpecMemory:Remember(guid, name, sig.class, sig.spec, false, sig.role) end
+            if addon._debugEnabled then
+                addon:DebugLog("ENEMYSPEC", "guid=%s name=%s class=%s spec=%s strength=%d sub=%s src=%s dst=%s spell=%s confirmed-weak-guess",
+                    tostring(guid), tostring(name), sig.class, sig.spec, sig.strength, tostring(subEvent), tostring(guid), tostring(destGUID), tostring(spellName))
+            end
+            return true
+        end
         if old.strength < sig.strength then old.strength = sig.strength end
         if sig.kind and (old.texture ~= sig.texture or old.kind ~= sig.kind) then
             old.texture = sig.texture; old.kind = sig.kind; return true
         end
         return false
     end
-    -- A different spec of the SAME class means he respecced just now, so the
-    -- newest signature wins - but only from row 8 or deeper (40+ points in that
-    -- tree). A 25-point off-tree talent is a hybrid proc, not a respec: letting
-    -- those through made a 25/46 warlock flicker DEMONOLOGY -> AFFLICTION ->
-    -- DEMONOLOGY inside one teamfight. Depth still decides between hints that
-    -- agree on the spec, which the branch above handles.
-    if old and old.class == sig.class and sig.strength < 8 then return false end
-    -- A player never changes class. Another class's signature (a shared
-    -- localized spell name) only replaces a known class when strictly stronger.
-    if old and old.class ~= sig.class and old.strength >= sig.strength then return false end
+    -- A different spec of the SAME class is either a hybrid dip or a respec.
+    -- Depth decides: the main tree is the one with the most points, and a
+    -- talent's row is a lower bound on those points, so only a DEEPER talent
+    -- may move the icon (see DeeperSpec). A 25-point off-tree talent is a hybrid
+    -- proc, not a respec - letting those through made a 25/46 warlock flicker
+    -- DEMONOLOGY -> AFFLICTION -> DEMONOLOGY inside one teamfight. Depth still
+    -- decides between hints that agree on the spec, which the branch above
+    -- handles. A weak guess or a bare class is not a spec, so a signature
+    -- replaces it at any depth.
+    if old and old.class == sig.class and not old.weak and not old.classOnly then
+        if not addon.DeeperSpec(sig.strength, old) then
+            stats.hybridKept = stats.hybridKept + 1
+            if addon._debugEnabled then
+                addon:DebugLog("HYBRID", "guid=%s name=%s kept %s (%d) over %s (%d) spell=%s",
+                    tostring(guid), tostring(name), tostring(sig.spec), sig.strength,
+                    tostring(old.spec), old.strength or 0, tostring(spellName))
+            end
+            return false
+        end
+        -- a deeper talent still short of 40 points moved the icon: the main
+        -- tree just proved itself (Preg 0/28/43, rogue 38/33)
+        if sig.strength < 8 then
+            stats.hybridMoved = stats.hybridMoved + 1
+            if addon._debugEnabled then
+                addon:DebugLog("HYBRID", "guid=%s name=%s moved to %s (%d) over %s (%d) spell=%s",
+                    tostring(guid), tostring(name), tostring(sig.spec), sig.strength,
+                    tostring(old.spec), old.strength or 0, tostring(spellName))
+            end
+        end
+    end
+    -- A player NEVER changes class. A different class may only be a correction
+    -- of weak evidence, never of another signature: a shared spell name (or a
+    -- client quirk that attributes a party aura to its recipient) used to flip a
+    -- proven Death Knight to Warlock on one Haunt line. A bare class proof or a
+    -- guess can still be corrected, but only by a deep (row 8+) talent, and only
+    -- from a real cast - never from damage, which is what a REFLECTED spell
+    -- looks like (Spell Reflection is credited to the warrior who reflected it).
+    if old and old.class ~= sig.class then
+        if (old.classOnly or old.weak) and sig.strength >= 8 and not REFLECTABLE[subEvent] then
+            -- allowed: weak evidence replaced by a deep talent we saw him cast
+        else
+            if addon._debugEnabled then
+                addon:DebugLog("ENEMYSPEC", "guid=%s name=%s ignored-class-change old=%s new=%s strength=%d sub=%s%s src=%s dst=%s spell=%s",
+                    tostring(guid), tostring(name), tostring(old.class), tostring(sig.class),
+                    sig.strength, tostring(subEvent),
+                    REFLECTABLE[subEvent] and " (damage: a reflected spell names the reflector)" or "",
+                    tostring(guid), tostring(destGUID), tostring(spellName))
+            end
+            return false
+        end
+    end
     -- A player whose real class is known (inspection/unit) never takes another class.
     local known = cacheByGUID[guid]
     if known and known.class and known.class ~= sig.class then return false end
@@ -417,31 +872,322 @@ local function NoteEnemySpec(guid, name, spellName)
         enemySpecCount = enemySpecCount + 1
         if enemySpecCount > 2000 then wipe(enemySpecByGUID); wipe(enemySpecByName); enemySpecCount = 1 end
     end
-    local entry = { guid = guid, class = sig.class, spec = sig.spec, texture = sig.texture, role = sig.role, strength = sig.strength, kind = sig.kind }
+    local entry = { guid = guid, name = name, class = sig.class, spec = sig.spec, texture = sig.texture, role = sig.role, strength = sig.strength, kind = sig.kind }
     enemySpecByGUID[guid] = entry
-    if type(name) == "string" then
-        -- Render-only fallback for plates whose GUID is unknown (stock client).
-        -- Two players with one short name make the name unusable.
-        local short = name:match("^[^%-]+") or name
-        local prev = enemySpecByName[short]
-        if prev == false or (prev and prev.guid ~= guid) then
-            enemySpecByName[short] = false
-        else
-            enemySpecByName[short] = entry
-        end
-    end
+    StoreSpecName(name, entry)
+    -- a Bear-form signature is a tank even though FERAL alone means DAMAGER.
+    local role = sig.role
+    if sig.kind == "BEAR" then role = "TANK" end
+    -- a row-8+ talent replaces a build we read earlier, at once
+    addon.AdoptSpec(guid, name, sig.class, sig.spec, sig.texture, role, sig.kind)
+    if addon.SpecMemory then addon.SpecMemory:Remember(guid, name, sig.class, sig.spec, false, role) end
+
     if addon._debugEnabled then
-        addon:DebugLog("ENEMYSPEC", "guid=%s name=%s class=%s spec=%s strength=%d spell=%s",
-            tostring(guid), tostring(name), sig.class, sig.spec, sig.strength, tostring(spellName))
+        addon:DebugLog("ENEMYSPEC", "guid=%s name=%s class=%s spec=%s strength=%d sub=%s src=%s dst=%s spell=%s",
+            tostring(guid), tostring(name), sig.class, sig.spec, sig.strength, tostring(subEvent), tostring(guid), tostring(destGUID), tostring(spellName))
     end
     return true
 end
 
+-- Full wipe of everything the combat log learned about players. Used by the
+-- explicit "Delete all saved player information" button and by the login/reload
+-- wipe while the memory is off. Never called by a zone change or an instance.
+addon.ClearLearnedSpecs = function()
+    wipe(enemySpecByGUID); wipe(enemySpecByName); enemySpecCount = 0
+    wipe(friendlySpecByGUID); wipe(friendlySpecByName); friendlySpecCount = 0
+    wipe(friendlyViewByKey); friendlyViewCount = 0
+end
+-- kept for callers that predate the friendly store
+addon.ClearEnemySpecs = addon.ClearLearnedSpecs
+
+-- Turning "Guess a spec from common spells" off must remove GUESSES only. A
+-- signature or an inspection is not a guess, so a proven spec keeps its icon
+-- instead of vanishing until the next loading screen.
+local function DropGuesses(store, byNameStore)
+    local kept = {}
+    for guid, entry in pairs(store) do
+        if entry.weak then store[guid] = nil else kept[#kept + 1] = entry end
+    end
+    wipe(byNameStore)
+    for i = 1, #kept do
+        local entry = kept[i]
+        local short = type(entry.name) == "string" and (entry.name:match("^[^%-]+") or entry.name) or nil
+        if short then
+            local prev = byNameStore[short]
+            if prev == false or (prev and prev.guid ~= entry.guid) then byNameStore[short] = false
+            else byNameStore[short] = entry end
+        end
+    end
+end
+addon.ClearGuessedSpecs = function()
+    DropGuesses(enemySpecByGUID, enemySpecByName)
+    DropGuesses(friendlySpecByGUID, friendlySpecByName)
+    wipe(friendlyViewByKey); friendlyViewCount = 0
+end
+
+-- Friendly players who are NOT in your group. They have no unit token on a
+-- stock client, so the talent scanner cannot reach them: the combat log is the
+-- only source of a class or a spec. Party and raid members are inspected
+-- properly and never come here, and a real read always wins over this store.
+--
+-- Three tiers, strongest last:
+--   class proof  a spell exactly one class can train -> the class, nothing else
+--   guess        a weak signal -> class + a guessed spec (off by default)
+--   signature    a talent at row 5+ -> class + the real spec
+-- A weaker tier never replaces a stronger one, and the class never changes
+-- once a signature or a guess has set it.
+local function NoteFriendlySpec(guid, name, spellName, spellID, subEvent, destGUID)
+    if addon.ForcedSpec(spellID, guid, name, spellName, subEvent, destGUID, false) then return true end
+    -- A real read is the strongest CLASS evidence, but it is a snapshot: he can
+    -- respec the moment he walks away and we may never hover him again. So the
+    -- read locks the CLASS (below) and silences GUESSES, and a row-8+ talent is
+    -- still allowed to change the SPEC (see AdoptSpec). A unit token that only
+    -- read the class (out of inspect range, standing still) is not authoritative
+    -- about the spec at all, so the combat log fills that in. A record restored
+    -- from DISK is from an earlier session, so a proven signature may correct it
+    -- even below row 8 (the knownStale path below).
+    local known = cacheByGUID[guid]
+    local knownStale = known and known.fromDisk and known.specTexture
+
+    local sig = Signatures()[spellName] or (spellID and Signatures()[spellID])
+    local old = friendlySpecByGUID[guid]
+    local want, via
+    if sig then
+        want, via = sig, "signature"
+    else
+        local w = DB().weakSpecSignals and WeakSignatures()[spellName] or nil
+        if w then
+            want = { class = w.class, spec = w.spec,
+                texture = addon.FeralTexture(w.kind) or w.texture,
+                role = w.kind == "BEAR" and "TANK" or w.role,
+                strength = 0, kind = w.kind or "SPEC", weak = true }
+            via = "guess"
+        else
+            -- Any spell exactly one class can train proves the class. This is what
+            -- turns the first thing a friendly outsider casts into a class icon
+            -- instead of leaving a question mark on his plate.
+            local cls = spellID and SpellClass(spellID) or nil
+            if not cls then return false end
+            want = { class = cls, strength = 0, kind = "CLASS", classOnly = true }
+            via = "spell"
+        end
+    end
+
+    -- a class the client itself reported (UnitClass) is never overridden here
+    if known and known.class and known.class ~= want.class then return false end
+    -- A build read this session silences GUESSES completely (that is what the
+    -- read is for), and owns the cat/bear half of a Feral. It does not freeze
+    -- the spec: another spec needs a row-8+ talent, which is proof of a respec.
+    local lockedSpec = addon.LockedSpec(guid)
+    if lockedSpec then
+        if want.weak then return false end
+        if sig and sig.kind and lockedSpec == "FERAL" then return false end
+        if want.spec ~= lockedSpec and (want.strength or 0) < 8 then return false end
+    end
+    local apiClass = auraClassByGUID[guid]
+    if apiClass and apiClass ~= want.class then return false end
+    if knownStale then
+        -- a disk record only loses to a proven signature of the same class
+        if via ~= "signature" or want.spec == known.spec then return false end
+        known.spec, known.specTexture, known.specRole, known.feralKind = nil, nil, nil, nil
+        known.isHealer, known.isTank, known.fromDisk = false, false, nil
+    end
+
+    -- A class proof only ever ADDS a class. It must never erase a spec that a
+    -- signature or a guess already named: a mage who shields himself and then
+    -- buffs Arcane Intellect would lose his spec icon on the buff.
+    if via == "spell" and old and not old.classOnly then return false end
+
+    if old then
+        if old.classOnly then
+            -- a single spell is weaker evidence than a talent, so a signature of
+            -- another class may correct it; a guess may not, and one class proof
+            -- never flips to another class proof. A correction needs a deep
+            -- (row 8+) talent we saw him CAST: damage can be a reflected spell.
+            if via == "spell" then return false end
+            if via == "guess" and old.class ~= want.class then return false end
+            if via == "signature" and old.class ~= want.class
+                and ((want.strength or 0) < 8 or REFLECTABLE[subEvent]) then return false end
+        else
+            if old.class ~= want.class then
+                if old.weak and via == "signature" and not REFLECTABLE[subEvent] then
+                    -- a talent outranks a guess, whatever class the guess named
+                else
+                    return false
+                end
+            elseif old.spec == want.spec then
+                if old.weak and via ~= "guess" then
+                    -- a real signature confirms the guess: same icon, now proven
+                    old.weak = nil; old.strength = want.strength
+                    old.texture = want.texture; old.kind = want.kind
+                    local role = want.role
+                    if want.kind == "BEAR" then role = "TANK" end
+                    if addon.SpecMemory then
+                        addon.SpecMemory:Remember(guid, name, want.class, want.spec, false, role)
+                    end
+                    if addon._debugEnabled then
+                        addon:DebugLog("FRIENDSPEC", "guid=%s name=%s class=%s spec=%s strength=%d spell=%s confirmed-weak-guess",
+                            tostring(guid), tostring(name), want.class, want.spec, want.strength, tostring(spellName))
+                    end
+                    return true
+                end
+                if old.strength < (want.strength or 0) then old.strength = want.strength end
+                -- same spec, but the FORM is new information (a cat that shifted
+                -- to bear is a bear now): redraw, never flicker the spec.
+                if want.kind and old.kind ~= want.kind
+                    and (want.kind == "BEAR" or want.kind == "CAT") then
+                    old.kind = want.kind
+                    old.texture = addon.FeralTexture(want.kind) or old.texture
+                    old.role = want.kind == "BEAR" and "TANK" or want.role
+                    return true
+                end
+                return false
+            elseif old.weak and via == "guess" then
+                -- Two different guesses of the same class: keep the FIRST one.
+                -- Both are equally weak, and taking the newest made a warlock
+                -- flicker Affliction <-> Destruction on Corruption/Immolate.
+                -- A form signal is the only thing allowed to move it, because a
+                -- shapeshift is exact, current information rather than a guess.
+                -- A real SIGNATURE is not a guess and never takes this branch:
+                -- it falls through to the depth rule below, so a Fire mage who
+                -- opened with a Frostbolt is not stuck on FROST for the fight.
+                -- A form only refines a FERAL guess. A guessed Balance druid in
+                -- cat form is still Balance (every druid can shift to travel);
+                -- setting the kind without the spec left spec=BALANCE with
+                -- feralKind=CAT in a capture, which is state that cannot exist.
+                if old.spec == "FERAL" and (want.kind == "BEAR" or want.kind == "CAT")
+                    and old.kind ~= want.kind then
+                    old.kind = want.kind
+                    old.texture = addon.FeralTexture(want.kind) or old.texture
+                    old.role = want.kind == "BEAR" and "TANK" or want.role
+                    return true
+                end
+                return false
+            elseif via ~= "signature" then
+                return false
+            elseif not addon.DeeperSpec(want.strength, old) then
+                -- the depth rule stops a hybrid dip moving a KNOWN spec
+                stats.hybridKept = stats.hybridKept + 1
+                if addon._debugEnabled then
+                    addon:DebugLog("HYBRID", "guid=%s name=%s kept %s (%d) over %s (%d) spell=%s",
+                        tostring(guid), tostring(name), tostring(want.spec), want.strength or 0,
+                        tostring(old.spec), old.strength or 0, tostring(spellName))
+                end
+                return false
+            elseif (want.strength or 0) < 8 then
+                -- a deeper talent below 40 points moved it: the main tree won
+                stats.hybridMoved = stats.hybridMoved + 1
+                if addon._debugEnabled then
+                    addon:DebugLog("HYBRID", "guid=%s name=%s moved to %s (%d) over %s (%d) spell=%s",
+                        tostring(guid), tostring(name), tostring(want.spec), want.strength or 0,
+                        tostring(old.spec), old.strength or 0, tostring(spellName))
+                end
+            end
+        end
+    end
+
+    if not old then
+        friendlySpecCount = friendlySpecCount + 1
+        if friendlySpecCount > 2000 then
+            wipe(friendlySpecByGUID); wipe(friendlySpecByName); friendlySpecCount = 1
+            wipe(friendlyViewByKey); friendlyViewCount = 0
+        end
+    end
+    local entry = { guid = guid, name = name, class = want.class, spec = want.spec,
+        texture = addon.FeralTexture(want.kind) or want.texture,
+        role = want.role, strength = want.strength, kind = want.kind,
+        weak = want.weak or nil, classOnly = want.classOnly or nil }
+    friendlySpecByGUID[guid] = entry
+    if type(name) == "string" then
+        local short = name:match("^[^%-]+") or name
+        local prev = friendlySpecByName[short]
+        if prev == false or (prev and prev.guid ~= guid) then friendlySpecByName[short] = false
+        else friendlySpecByName[short] = entry end
+    end
+    -- keep the cross-session memory in step with what the combat log just proved
+    local role = want.role
+    if want.kind == "BEAR" then role = "TANK" end
+    -- a row-8+ talent replaces a build we read earlier, at once
+    if not want.weak then
+        addon.AdoptSpec(guid, name, want.class, want.spec, entry.texture, role, want.kind)
+    end
+    if addon.SpecMemory then
+        addon.SpecMemory:Remember(guid, name, want.class, want.spec, want.weak, role)
+    end
+    if addon._debugEnabled then
+        addon:DebugLog("FRIENDSPEC", "guid=%s name=%s class=%s spec=%s strength=%d via=%s sub=%s src=%s dst=%s spell=%s",
+            tostring(guid), tostring(name), want.class, tostring(want.spec or "-"), want.strength or 0,
+            via, tostring(subEvent), tostring(guid), tostring(destGUID), tostring(spellName or spellID))
+    end
+    return true
+end
+-- Last resort: what the Class/Spec Memory remembers about this player from an
+-- earlier session. Everything live outranks it - inspection, a signature, a
+-- guess, a class proof, the bar colour - so a stored record is only ever a
+-- baseline that the next detection overwrites.
+local function MemoryEntry(guid, name, classFile)
+    local mem = addon.SpecMemory
+    if not mem then return nil end
+    local entry = mem:Get(guid, name, classFile)
+    if not entry then return nil end
+    local icons = addon.SPEC_TREE_ICONS[entry.class]
+    -- The guess toggle also gates GUESSES THAT WERE STORED. Without this a
+    -- guessed spec survived turning "Guess a spec from common spells" off,
+    -- because the memory handed it back on the next render. The class is not a
+    -- guess: it stays.
+    local spec = entry.spec
+    if spec and entry.weak and not DB().weakSpecSignals then spec = nil end
+    local texture = spec and icons and icons[spec] or nil
+    local roles = addon.SPEC_ROLES[entry.class]
+    -- A Feral stored with a proven TANK role was a bear when we last saw him, so
+    -- he comes back as a bear (the tank icon while it is on, the bear texture
+    -- while it is off) instead of the generic cat. The record keeps the role,
+    -- not the form, which is why this is a derivation and not a stored field.
+    local feralKind = (entry.class == "DRUID" and spec == "FERAL" and entry.role == "TANK")
+        and "BEAR" or nil
+    return { guid = guid, class = entry.class, spec = spec, texture = texture,
+        -- a proven role (an inspected Feral tank) beats what the spec implies
+        role = (spec and (entry.role or (roles and roles[spec]))) or nil,
+        feralKind = feralKind,
+        kind = spec and "SPEC" or "CLASS",
+        weak = (spec and entry.weak) or nil, fromMemory = true }
+end
+
+-- What the combat log learned about a friendly outsider, or nil. A plate with
+-- a real class from inspection never asks.
+-- A player can change sides inside one session: a duel, a cross-faction
+-- battleground, or a paid faction change. The class and the spec do not change
+-- with the side, so each store also reads the other side's - otherwise a
+-- friendly who becomes hostile would lose the spec we already detected for him.
+local function FriendlySpec(guid, name, classFile)
+    local entry
+    if guid then entry = friendlySpecByGUID[guid] or enemySpecByGUID[guid]
+    elseif name then
+        -- the name maps are keyed by the SHORT name (StoreSpecName strips a
+        -- "-Realm" suffix), so the lookup must strip it too.
+        local short = name:match("^[^%-]+") or name
+        entry = friendlySpecByName[short]
+        if not entry and classFile then
+            local other = enemySpecByName[short]
+            if other and other ~= false then entry = other end
+        end
+    end
+    if entry and (not classFile or entry.class == classFile) then return entry end
+end
+
 -- By exact GUID; by name only for a GUID-less plate whose live class matches.
+-- see FriendlySpec: the other side's store is read too, for the same reason.
 local function EnemySpec(guid, name, classFile)
     local entry
-    if guid then entry = enemySpecByGUID[guid]
-    elseif name and classFile then entry = enemySpecByName[name] or nil end
+    if guid then entry = enemySpecByGUID[guid] or friendlySpecByGUID[guid]
+    elseif name and classFile then
+        local short = name:match("^[^%-]+") or name
+        entry = enemySpecByName[short]
+        if not entry then
+            local other = friendlySpecByName[short]
+            if other and other ~= false then entry = other end
+        end
+    end
     if entry and (not classFile or entry.class == classFile) then return entry end
 end
 
@@ -496,7 +1242,21 @@ end
 local function SyncTalentCache(guid, name)
     if not guid or not addon.TalentScanner or not addon.TalentScanner.Get then return end
     local talent = addon.TalentScanner:Get(guid)
-    if not talent or not talent.spec then return end
+    -- a record a live signature already contradicted is not evidence any more
+    if not talent or not talent.spec or talent.stale then return end
+    -- A record restored from disk comes from an earlier session. A talent
+    -- signature seen THIS session is proof of a talent the player has right now,
+    -- so if the two name different specs he respecced and the disk record is
+    -- stale. Without this an old inspection outranked the live combat log and
+    -- the icon only corrected itself on the next mouseover.
+    local fromDisk = addon.TalentScanner.IsFromDisk and addon.TalentScanner:IsFromDisk(guid)
+    if fromDisk then
+        local live = enemySpecByGUID[guid] or friendlySpecByGUID[guid]
+        if live and not live.weak and not live.classOnly and live.spec
+            and live.spec ~= talent.spec then
+            return
+        end
+    end
 
     -- Never reuse a mutable nameplate record for a different GUID. Build a fresh
     -- per-GUID render snapshot from the authoritative TalentScanner record, while
@@ -509,7 +1269,12 @@ local function SyncTalentCache(guid, name)
         spec = talent.spec,
         specTexture = talent.specTexture,
         specRole = talent.specRole,
-        feralKind = talent.feralKind,
+        -- a build read this session owns the form; a disk build keeps whatever
+        -- the live form read already established (RememberUnit), and only a
+        -- Feral build can carry a form at all.
+        feralKind = talent.feralKind or (talent.spec == "FERAL" and old.feralKind) or nil,
+        feralLock = (talent.feralKind and not fromDisk) or nil,
+        fromDisk = fromDisk or nil,
         isHealer = talent.specRole == "HEALER",
         isTank = talent.specRole == "TANK",
         isPet = old.isPet,
@@ -521,6 +1286,19 @@ local function SyncTalentCache(guid, name)
     if addon.ApplyFeralIdentity then addon.ApplyFeralIdentity(data, addon.IsAssignedGroupTank(FindUnitByGUID(guid))) end
     cacheByGUID[guid] = data
     if data.name and data.name ~= "" then cacheByName[data.name] = data end
+    -- an inspection is the strongest thing we can know: store it with its role
+    -- so the player's icon is back, with the right healer/tank shape, after a
+    -- reload even before he is inspected again. A Feral's specRole is nil by
+    -- design (the assignment/form decides), so map a bear or an assigned tank
+    -- to TANK explicitly or the tank icon would be lost across a reload.
+    if addon.SpecMemory then
+        local role = data.specRole
+        if data.class == "DRUID" and data.spec == "FERAL"
+            and (data.isTank or data.feralKind == "BEAR") then
+            role = "TANK"
+        end
+        addon.SpecMemory:Remember(guid, data.name, data.class, data.spec, false, role)
+    end
 end
 
 -- Sync talent cache by name when GUID not yet known to LibNameplates.
@@ -530,7 +1308,7 @@ local function SyncTalentCacheByName(name)
     if not name or name == "" or not addon._TalentCache then return end
     local match
     for guid, talent in pairs(addon._TalentCache) do
-        if talent.name == name and talent.spec and talent.specTexture then
+        if talent.name == name and talent.spec and talent.specTexture and not talent.stale then
             if match then cacheByName[name] = nil; return end
             match = guid
         end
@@ -576,9 +1354,41 @@ local function RememberUnit(unit)
     -- A pet's UnitClass is its creature class (warrior/paladin), never shown.
     local classFile = not isPet and select(2, UnitClass(unit)) or nil
     local talent = not isPet and addon.TalentScanner and addon.TalentScanner:Get(guid)
+    if talent and talent.stale then talent = nil end
     if talent and classFile and talent.class ~= classFile then talent = nil end
+    -- a disk record is from an earlier session: a live proven signature wins
+    local fromDisk = talent and addon.TalentScanner.IsFromDisk
+        and addon.TalentScanner:IsFromDisk(guid) or false
+    local dropSpec = false
+    if fromDisk then
+        local live = enemySpecByGUID[guid] or friendlySpecByGUID[guid]
+        if live and not live.weak and not live.classOnly and live.spec
+            and live.spec ~= talent.spec then
+            talent, dropSpec = nil, true
+        end
+    end
     local old = cacheByGUID[guid] or {}
     if classFile and old.class and old.class ~= classFile then old = {} end
+    -- A visible druid's current shapeshift is a live fact read from his buffs,
+    -- even when he never casts (a level 12 bear standing still). Only druids are
+    -- scanned, so this costs a handful of UnitBuff calls per refresh.
+    local formKind = (classFile == "DRUID" and addon.UnitFormKind) and addon.UnitFormKind(unit) or nil
+    -- The talent build is the last word on a druid's FORM, not the shapeshift we
+    -- happen to see: a cat-talent druid who shifts to bear to survive is still a
+    -- cat, and a bear-talent druid who shifts to cat to travel is still a bear.
+    -- Only a build read in THIS session locks the form; a build restored from
+    -- disk is older than the shapeshift in front of us, so the live form wins
+    -- there until the next real inspection.
+    local talentKind = talent and talent.feralKind or nil
+    local freshBuild = talent and talent.spec and not fromDisk
+    local feralKind, feralLock
+    if freshBuild and talent.spec ~= "FERAL" then
+        feralKind = nil                    -- Balance/Restoration: not a feral at all
+    elseif freshBuild and talentKind then
+        feralKind, feralLock = talentKind, true
+    else
+        feralKind = formKind or talentKind -- ambiguous build: the form we can see
+    end
     local inspectedRole = talent and talent.specRole or nil
     -- an inspected/group-comm role always wins; before it is
     -- known the queued LFD role, then a self-cast healer aura, decide.
@@ -596,17 +1406,38 @@ local function RememberUnit(unit)
         isHealer = isHealer == true,
         isTank = isTank == true,
         isPet = isPet,
-        spec = talent and talent.spec or old.spec,
-        specTexture = talent and talent.specTexture or old.specTexture,
-        specRole = inspectedRole or old.specRole,
-        feralKind = talent and talent.feralKind,
+        -- when a stale disk spec was dropped, do not resurrect the copy that was
+        -- already in the cache: the live signature is what we know now.
+        spec = talent and talent.spec or ((not dropSpec and old.spec) or nil),
+        specTexture = talent and talent.specTexture or ((not dropSpec and old.specTexture) or nil),
+        specRole = inspectedRole or ((not dropSpec and old.specRole) or nil),
+        feralKind = feralKind,
+        feralLock = feralLock or nil,
+        fromDisk = fromDisk or nil,
         _specDisplayAt = old._specDisplayAt,
         _specDisplaySpec = old._specDisplaySpec,
     }
+    -- A shapeshift only means something for a Feral: every druid can enter Cat
+    -- and Bear Form, so a Balance druid who shifts to bear to survive is still
+    -- Balance - and must never be drawn as a tank.
+    if data.spec and data.spec ~= "FERAL" then data.feralKind = nil end
     cacheByGUID[guid] = data
     if addon.ApplyFeralIdentity then addon.ApplyFeralIdentity(data, addon.IsAssignedGroupTank(unit)) end
     -- Pet names ("Wolf", "Imp") are not unique; pets never enter the name cache.
     if name and name ~= "" and not isPet then cacheByName[name] = data end
+    -- A visible unit is a real read of the CLASS even when no talent record
+    -- exists (out of inspect range, never cast a spell). Store it so the class
+    -- icon survives a reload. Remember never downgrades a spec, so this can only
+    -- fill a class that was not known yet. The player himself is not "another
+    -- player" and is not stored.
+    if addon.SpecMemory and not isPet and data.class and unit ~= "player" then
+        local role = data.specRole
+        if data.class == "DRUID" and data.spec == "FERAL"
+            and (data.isTank or data.feralKind == "BEAR") then
+            role = "TANK"
+        end
+        addon.SpecMemory:Remember(guid, name, data.class, data.spec, false, role)
+    end
 end
 
 -- names of the pets of the player, his group and arena
@@ -1023,6 +1854,25 @@ local function NoteAuraName(guid, name, classFile)
         end
         if type(classFile) == "string" and classFile ~= "" then auraClassByGUID[guid] = classFile end
     end
+    -- The client's own answer is authoritative. If a class was inferred from a
+    -- spell id before this player ever appeared in a unit token, correct it here:
+    -- a bare class is simply replaced, and a stored spec of the wrong class is
+    -- dropped (it can only have come from a shared spell name).
+    local apiClass = auraClassByGUID[guid]
+    if type(apiClass) == "string" then
+        local enemy = enemySpecByGUID[guid]
+        if enemy and enemy.classOnly and enemy.class ~= apiClass then
+            enemy.class = apiClass
+        elseif enemy and enemy.class ~= apiClass then
+            enemySpecByGUID[guid] = nil
+        end
+        local friendly = friendlySpecByGUID[guid]
+        if friendly and friendly.classOnly and friendly.class ~= apiClass then
+            friendly.class = apiClass
+        elseif friendly and friendly.class ~= apiClass then
+            friendlySpecByGUID[guid] = nil
+        end
+    end
     local short = ShortName(name)
     if auraNameByGUID[guid] == short then return end
     if not auraNameByGUID[guid] then
@@ -1214,10 +2064,10 @@ local function AuraKeyForPlate(name, classFile)
     if g then
         if not (ccStackByGUID[g] or auraByGUID[g]) then g, why = nil, "empty" end
     end
-    if addon._debugEnabled and why ~= "empty" then
-        -- "empty" is not a decision, it is the normal state of a player who has
-        -- no CC or aura to draw. Logging it buried the capture under thousands
-        -- of lines and pushed the useful ones out of the scrollback.
+    -- "empty" and "none" are not decisions: they are the normal state of a
+    -- player who has no CC or aura to draw. Logging them buried the capture
+    -- under thousands of lines and pushed the useful ones out of the scrollback.
+    if addon._debugEnabled and why ~= "empty" and (g ~= nil or why ~= nil) then
         DCompact("AURAPICK", short, "name=%s class=%s candidates=%d picked=%s why=%s",
             tostring(short), tostring(classFile), total, tostring(g), tostring(why or "none"))
     end
@@ -1455,7 +2305,7 @@ local function ApplyAuraOverlay(ov, guid, unit, classFile, target, enemy)
     end
     SetCenterTimer(ov, enemy, entry.start, entry.duration, entry.guessed)
     ov._auraDropAt = dropAt
-    return true
+    return true, entry.spellID
 end
 
 local function IsTargetPlate(plate, unit)
@@ -1483,13 +2333,19 @@ local function FriendlyIconState(cfg, data, classFile, isPet, hasFlag, now, ov)
     local specHidden = not isPet and data.specTexture ~= nil and IconFilter.SpecHidden(cfg, false, classFile, data.spec)
     local showClass = cfg.showClassIcon ~= false and not classHidden
     local showSpec = cfg.showSpec ~= false
+    -- the ? is a fallback for an unknown PLAYER: never on a pet, and only
+    -- while some identity icon on this side could replace it. The pet and lock
+    -- checks come last so a profile with ? off pays nothing for them.
     local showUnknown = cfg.showUnknownFriendly ~= false and not classHidden and not specHidden
+        and not isPet and not (data.guid and IsIconPetGUID and IsIconPetGUID(data.guid))
+        and not addon.UnknownIconLocked(cfg, false)
     local hasSpec = data.specTexture ~= nil and not specHidden
 
     if not isPet and classFile == "DRUID" and data.spec == "FERAL" then
         -- a known Feral tank (assigned tank, or Bear talents) shows the
         -- TANK icon only while "Show tank icon" is on; otherwise Bear/Cat form.
-        if (data.isTank or data.feralKind == "BEAR") and cfg.useTankIcon ~= false then
+        if (data.isTank or (data.spec == "FERAL" and data.feralKind == "BEAR"))
+            and cfg.useTankIcon ~= false then
             data._specDisplayAt = nil
             data._specDisplaySpec = data.spec
             ov._specTransitionAt = nil
@@ -1539,7 +2395,7 @@ local function FriendlyIconState(cfg, data, classFile, isPet, hasFlag, now, ov)
             data._specDisplaySpec = data.spec
             ov._debugSpecCompleted = nil
             data._specDisplayAt = now + (tonumber(cfg.classToSpecDelay) or 1.0)
-            if addon._debugWatchGUID == data.guid then
+            if addon._debugWatchGUID and addon._debugWatchGUID == data.guid then
                 if addon._debugEnabled then D("DISPLAY", "SPEC transition ARMED guid=%s spec=%s deadline=%.3f delay=%.3f", tostring(data.guid), tostring(data.spec), data._specDisplayAt, tonumber(cfg.classToSpecDelay) or 1.0) end
             end
         end
@@ -1547,7 +2403,7 @@ local function FriendlyIconState(cfg, data, classFile, isPet, hasFlag, now, ov)
         if now >= data._specDisplayAt then
             ov._specTransitionAt = nil
             ov._specTransitionGUID = nil
-            if addon._debugWatchGUID == data.guid and ov._debugSpecCompleted ~= data.spec then
+            if addon._debugWatchGUID and addon._debugWatchGUID == data.guid and ov._debugSpecCompleted ~= data.spec then
                 ov._debugSpecCompleted = data.spec
                 if addon._debugEnabled then D("DISPLAY", "SPEC transition COMPLETE guid=%s spec=%s tex=%s", tostring(data.guid), tostring(data.spec), tostring(data.specTexture)) end
             end
@@ -1569,10 +2425,33 @@ local function FriendlyIconState(cfg, data, classFile, isPet, hasFlag, now, ov)
     if showClass and classFile and not isPet then
         return "CLASS", classFile, false, 1
     end
-    if showUnknown and not isPet then
+    if showUnknown then
         return "UNKNOWN", addon.UNKNOWN_ICON, true, 1
     end
     return nil
+end
+
+-- One line per icon CHANGE, for every plate, while debug is on. The old
+-- DISPLAY line only fired for the watched GUID or the mouseover, so a capture
+-- could not prove what the other ninety plates were showing. Cheap: a string
+-- compare per render, and only when debug is enabled.
+local function LogIcon(ov, side, guid, name, cfg, enemy, classFile, data, iconKind, shown)
+    if not addon._debugEnabled then return end
+    ov._iconSide = side
+    stats.Seen(side, guid or name)
+    local form = data.feralKind
+    local key = tostring(guid) .. "|" .. tostring(name) .. "|" .. tostring(iconKind)
+        .. "|" .. tostring(data.spec) .. "|" .. tostring(shown)
+        .. "|" .. tostring(data.isHealer) .. "|" .. tostring(data.isTank)
+        .. "|" .. tostring(form)
+    if ov._iconLogged == key then return end
+    ov._iconLogged = key
+    stats.Bump(stats.icons[side] or stats.icons.friendly, iconKind)
+    if form == "BEAR" or form == "CAT" then stats.Bump(stats.forms, form) end
+    D("ICON", "side=%s name=%s guid=%s mode=%s class=%s spec=%s role=%s healer=%s tank=%s form=%s kind=%s shown=%s",
+        side, tostring(name), tostring(guid), tostring(CurrentDisplayMode(cfg, enemy)),
+        tostring(classFile), tostring(data.spec), tostring(data.specRole),
+        tostring(data.isHealer), tostring(data.isTank), tostring(form or "-"), tostring(iconKind), tostring(shown))
 end
 
 local function ApplySelectedIcon(ov, cfg, enemy, data, classFile, hasFlag, isPet, target)
@@ -1620,7 +2499,9 @@ local function ApplySelectedIcon(ov, cfg, enemy, data, classFile, hasFlag, isPet
             addon.SetClassIconTexture(ov.icon, classFile)
             return true, false, 1, "CLASS"
         end
-        if cfg.enemyShowUnknown and not specHidden and not classHidden then
+        if cfg.enemyShowUnknown and not specHidden and not classHidden and not isPet
+            and not (data.guid and IsIconPetGUID and IsIconPetGUID(data.guid))
+            and not addon.UnknownIconLocked(cfg, true) then
             addon.SetCircularTexture(ov.icon, addon.UNKNOWN_ICON)
             return true, true, 1, "UNKNOWN"
         end
@@ -1636,7 +2517,7 @@ local function ApplySelectedIcon(ov, cfg, enemy, data, classFile, hasFlag, isPet
     elseif mode == "HEALER" and data.isHealer then
         addon.SetRoleTexture(ov.icon, "HEALER")
         return true, false, (enemy and cfg.enemyHealerIconSize or cfg.healerIconSize) or 1.35, "HEALER"
-    elseif mode == "TANK" and (data.isTank or data.feralKind == "BEAR") then
+    elseif mode == "TANK" and (data.isTank or (data.spec == "FERAL" and data.feralKind == "BEAR")) then
         addon.SetRoleTexture(ov.icon, "TANK")
         return true, false, 1, "TANK"
     elseif mode == "CLASS_SPEC" then
@@ -1748,9 +2629,140 @@ local function ApplyFriendly(plate, ov, guid, name, unit, cached)
             data = cacheByGUID[guid] or data
         end
     end
+    -- A friendly plate with no unit token can still have a class from the client
+    -- API (GetPlayerInfoByGUID), which NoteAuraName learned from the combat log
+    -- even when the spell was not a class proof. Fill it before the merge so a
+    -- plate that only appeared in the log still gets its class icon.
+    if not data.class and guid and auraClassByGUID[guid] then
+        data = data or {}
+        data.class = auraClassByGUID[guid]
+        -- store it too: this class came from the client API, not from a spell,
+        -- so no other path would have written a class-only record for him.
+        if addon.SpecMemory then
+            addon.SpecMemory:Remember(guid, name, data.class, nil, nil, nil)
+        end
+    end
+    -- A friendly plate with no unit token has no inspection result: the combat
+    -- log and the Class/Spec Memory are the only sources of a class. A real
+    -- read always wins, so this only fills in what the cache does not already
+    -- have, and it never writes a guess back into the shared cache.
+    --
+    -- The health-bar colour is deliberately NOT read here. 3.3.5a has exactly
+    -- one nameplate class-colour CVar, ShowClassColorInNameplate, and it only
+    -- colours hostile plates; there is no friendly variant in the client. A
+    -- friendly bar is green, so the read could only ever return nil - and on a
+    -- custom nameplate addon it could return a colour that merely resembles a
+    -- class and paint a wrong icon.
+    -- A cached inspection restored from an earlier session is not proof of what
+    -- the player has now. A proven signature seen this session is, so it wins.
+    if data.fromDisk and data.spec then
+        local live = FriendlySpec(guid, name, data.class)
+        if live and not live.weak and not live.fromMemory and live.spec and live.spec ~= data.spec then
+            data.spec, data.specTexture, data.specRole, data.feralKind = nil, nil, nil, nil
+            data.isHealer, data.isTank, data.fromDisk = false, false, nil
+        end
+    end
+    if not data.class or not data.specTexture then
+        local learned = FriendlySpec(guid, name, data.class)
+        -- nothing live names a spec: fall back to the memory, which is a
+        -- baseline that any detection above replaces on the next render.
+        local source = learned
+        if not source or not source.spec then
+            local mem = MemoryEntry(guid, name, data.class or (learned and learned.class))
+            if mem then source = mem end
+        end
+        if source and (not data.class or data.class == source.class) then
+            -- One view per plate identity, rebuilt in place. A brand new table
+            -- here throws away the class -> spec deadline that FriendlyIconState
+            -- stored on it, so the icon would sit on the class forever while the
+            -- deadline re-armed on every render.
+            local key = guid and ("g:" .. guid) or (name and ("n:" .. name)) or nil
+            local view
+            if key then
+                view = friendlyViewByKey[key]
+                if not view then
+                    if friendlyViewCount >= 400 then wipe(friendlyViewByKey); friendlyViewCount = 0 end
+                    view = {}
+                    friendlyViewByKey[key] = view
+                    friendlyViewCount = friendlyViewCount + 1
+                end
+                local at, atSpec, logged = view._specDisplayAt, view._specDisplaySpec, view._mergeLogged
+                for k in pairs(view) do view[k] = nil end
+                for k, v in pairs(data) do view[k] = v end
+                view._specDisplayAt, view._specDisplaySpec = at, atSpec
+                view._mergeLogged = logged
+            else
+                view = {}
+                for k, v in pairs(data) do view[k] = v end
+            end
+            local hadClass = data.class
+            view.guid = view.guid or guid
+            if not view.class then view.class = source.class end
+            -- a talent build read this session owns the form; a live signal may
+            -- only fill it in when the build could not name one
+            local lockedForm = view.feralLock
+            if not view.specTexture and source.spec and source.class == view.class then
+                view.spec, view.specTexture, view.specRole = source.spec, source.texture, source.role
+                -- a Mangle (Bear)/(Cat) signature names the FORM, which is what
+                -- decides the tank icon and the Bear/Cat texture. The enemy path
+                -- already read sig.kind; the friendly merge did not, so a friendly
+                -- bear showed the bear-form icon instead of the tank icon.
+                if not lockedForm and (source.kind == "BEAR" or source.kind == "CAT") then
+                    view.feralKind = source.kind
+                end
+            elseif source.spec and source.class == view.class and view.spec == source.spec
+                and not lockedForm and (source.kind == "BEAR" or source.kind == "CAT") then
+                -- the spec is already known (cache, memory, a plain Feral
+                -- signature) but a live form signal now says which half it is.
+                view.feralKind = source.kind
+            end
+            data = view
+            if addon._debugEnabled then
+                -- Once per change, not per render.
+                local sig = tostring(view.class) .. "|" .. tostring(view.spec)
+                if view._mergeLogged ~= sig then
+                    view._mergeLogged = sig
+                    DCompact("FRIENDMERGE", key or "?",
+                        "name=%s src=%s/%s%s cache=%s -> class=%s spec=%s",
+                        tostring(name), tostring(source.class), tostring(source.spec or "-"),
+                        source.fromMemory and " (memory)" or "",
+                        tostring(hadClass or "nil"), tostring(view.class), tostring(view.spec))
+                end
+            end
+        end
+    end
     local classFile = data.class
-    local isHealer = data.isHealer
-    local isTank = data.isTank or data.feralKind == "BEAR"
+    -- A live form signal refines a Feral whose spec came from somewhere else
+    -- (the cache, the memory, a plain "Feral" signature). Without this a druid
+    -- in Bear Form kept the cat texture because the merge above never ran.
+    if classFile == "DRUID" and data.spec == "FERAL" and not data.feralLock then
+        local live = FriendlySpec(guid, name, classFile)
+        if live and live.kind and live.kind ~= data.feralKind and not live.weak then
+            data.feralKind = live.kind
+        end
+    end
+    -- A known druid form decides the Feral texture even when the spec itself
+    -- came from another source (a signature that only said "Feral", the cache or
+    -- the memory): a bear must never be painted with the cat icon, and a cat
+    -- must never be painted with a bear.
+    if classFile == "DRUID" and data.spec == "FERAL" and data.feralKind then
+        data.specTexture = addon.FeralTexture(data.feralKind) or data.specTexture
+    end
+    -- The role a spec implies is part of the spec: a Restoration druid read from
+    -- the combat log is a healer even though nobody inspected him. Without this
+    -- a detected player kept his spec icon while "Healer icon" was on and only
+    -- switched to the healer icon after a mouseover. It applies to every source
+    -- on this side: inspection, signature, guess and Class/Spec Memory.
+    local specRole = data.specRole or addon.RoleForSpec(classFile, data.spec)
+    -- a Bear-form Feral is a tank even though FERAL alone means DAMAGER; keep
+    -- the role field honest so the ICON log and the memory agree with the icon.
+    if classFile == "DRUID" and data.spec == "FERAL" and data.feralKind == "BEAR" then
+        specRole = "TANK"
+    end
+    local isHealer = data.isHealer or specRole == "HEALER"
+    local isTank = data.isTank or specRole == "TANK"
+        or (data.spec == "FERAL" and data.feralKind == "BEAR")
+    data.specRole, data.isHealer, data.isTank = specRole, isHealer, isTank
     local isPet = data.isPet or IsPetUnit(unit)
     local flag = not isPet and FlagForPlate(guid, name) or nil
     local hasFlag = flag ~= nil
@@ -1783,6 +2795,7 @@ local function ApplyFriendly(plate, ov, guid, name, unit, cached)
     ov._isQuestion = false
 
     local shown, question, iconScale, iconKind = ApplySelectedIcon(ov, cfg, false, data, classFile, hasFlag, isPet, target)
+    LogIcon(ov, "friendly", guid, name, cfg, false, classFile, data, iconKind, shown)
     if addon._debugEnabled and guid and (addon._debugWatchGUID == guid or unit == "mouseover") then
         local sig = table.concat({
             tostring(guid), tostring(data.spec), tostring(data.specTexture), tostring(data.specRole),
@@ -1862,6 +2875,19 @@ local function ApplyPetBorder(ov, ownerClass, target)
     ov.colorBorder:Show()
 end
 
+-- One line per pet icon CHANGE while debug is on. Pet plates used to have no
+-- log at all, so a capture could not prove whether a CC really replaced the pet
+-- icon (or whether the plate was even recognised as a pet). Cheap: a string
+-- compare per render, and only when debug is enabled.
+local function LogPetIcon(ov, enemy, guid, name, kind, spellID)
+    if not addon._debugEnabled then return end
+    local key = tostring(guid) .. "|" .. tostring(name) .. "|" .. tostring(kind) .. "|" .. tostring(spellID)
+    if ov._petIconLogged == key then return end
+    ov._petIconLogged = key
+    D("PETICON", "side=%s name=%s guid=%s kind=%s spell=%s",
+        enemy and "enemy" or "friendly", tostring(name), tostring(guid), tostring(kind), tostring(spellID))
+end
+
 local function ApplyPet(plate, ov, guid, unit, enemy, name)
     local cfg = DB()
     local mode = CurrentDisplayMode(cfg, enemy)
@@ -1907,7 +2933,9 @@ local function ApplyPet(plate, ov, guid, unit, enemy, name)
     local ownerClass = PetOwnerClass(guid, name)
     ApplyPetBorder(ov, ownerClass, target)
     -- CC/aura replacement keeps the pet border (it would otherwise redraw grey).
-    if ApplyAuraOverlay(ov, guid, unit, nil, target, enemy) then ApplyPetBorder(ov, ownerClass, target) end
+    local cc, ccSpell = ApplyAuraOverlay(ov, guid, unit, nil, target, enemy)
+    if cc then ApplyPetBorder(ov, ownerClass, target) end
+    LogPetIcon(ov, enemy, guid, name, cc and "CC" or "PET", ccSpell)
     ov:Show()
 end
 
@@ -1928,21 +2956,73 @@ local function ApplyEnemy(plate, ov, guid, name, unit, cached, liveClass)
     -- Remember that this plate is a player, so a later render without a unit
     -- token (after mouseout) still has proof and is not hidden as an NPC.
     if guid then ov._guid = guid; ov._playerGUID = guid end
-    local classFile = data.class or liveClass
     local isPet = data.isPet or IsPetUnit(unit)
-    -- Inspection/group data always wins; a combat-log spec only fills the gap.
+    -- A live unit or the class-coloured bar first; a signature/memory class is
+    -- applied just below, and only then the class the client itself reported for
+    -- this GUID (GetPlayerInfoByGUID via NoteAuraName). A hostile plate with no
+    -- unit token and no bar colour used to stay "?" even when the combat log had
+    -- already named the class. The API answer is the LAST fallback so it can
+    -- never override a talent signature that is more specific.
+    local classFile = data.class or liveClass
+    -- A cached inspection restored from an earlier session loses to a proven
+    -- signature seen this session (he respecced since that inspection).
+    if data.fromDisk and data.spec then
+        local live = EnemySpec(guid, name, data.class)
+        if live and not live.weak and live.spec and live.spec ~= data.spec then
+            data.spec, data.specTexture, data.specRole, data.feralKind = nil, nil, nil, nil
+            data.isHealer, data.isTank, data.fromDisk = false, false, nil
+        end
+    end
+    -- Inspection/group data always wins, a combat-log spec fills the gap, and
+    -- the Class/Spec Memory is the last resort when neither knows anything.
     local sig = not isPet and not data.specTexture and EnemySpec(guid, name, classFile)
+    if not isPet and not data.specTexture and not sig then
+        sig = MemoryEntry(guid, name, classFile)
+    end
+    -- On a stock client a hostile plate has no unit token and no bar colour, so
+    -- the memory can be the ONLY thing that still knows the class after a
+    -- reload. Without this line the record was read and then thrown away, and
+    -- the plate stayed a question mark: the "enemies are not restored" bug.
+    if not classFile and sig and sig.class then classFile = sig.class end
+    if not classFile and guid then classFile = auraClassByGUID[guid] end
+    -- The class-coloured health bar is a real class read for an enemy plate with
+    -- no unit token (the only one on a stock client before any hover). Store it
+    -- so the class icon is back after a reload; a stored spec is never
+    -- downgraded by a class-only offer.
+    if guid and classFile and not isPet and addon.SpecMemory then
+        addon.SpecMemory:Remember(guid, name, classFile, nil, nil, nil)
+    end
     local view = ov._enemyView or {}
     ov._enemyView = view
     view.guid = guid
+    view.class = classFile
+    -- the view is reused when the client recycles this plate for another player:
+    -- a form left over from a previous druid must never leak onto a DK (it did,
+    -- and "Tank icons only" then drew a tank for him).
+    view.feralKind = nil
     view.specTexture = data.specTexture or (sig and sig.texture)
     -- the spec name comes from the same source as its texture (filters).
     if data.specTexture then view.spec = data.spec else view.spec = sig and sig.spec or nil end
-    view.isHealer = data.isHealer or (sig and sig.role == "HEALER") or false
-    -- a Feral in Bear form (Mangle Bear signature or inspected Bear talents)
-    -- counts as a tank when "Show enemy tank icons" is on, matching friendly bears.
-    local feralBear = (sig and sig.kind == "BEAR") or data.feralKind == "BEAR"
-    view.isTank = data.isTank or (sig and sig.role == "TANK")
+    -- The form: a talent build read this session decides, then the newest live
+    -- signal, then the last form we read from the unit. A Feral in Bear form
+    -- counts as a tank when "Show enemy tank icons" is on, matching friendlies.
+    local kind
+    if data.feralLock then kind = data.feralKind
+    else kind = (sig and sig.kind) or data.feralKind end
+    local feralBear = kind == "BEAR" and view.spec == "FERAL"
+    -- the form also decides the texture, so a cat is never painted as a bear
+    if classFile == "DRUID" and view.spec == "FERAL" then
+        view.feralKind = kind
+        view.specTexture = addon.FeralTexture(kind) or view.specTexture
+    end
+    -- The role a spec implies counts here exactly as it does for friendlies: a
+    -- Protection paladin detected from the combat log is a tank even though
+    -- nobody inspected him, so "Show enemy tank icons" applies at once.
+    local specRole = data.specRole or (sig and sig.role) or addon.RoleForSpec(classFile, view.spec)
+    if feralBear then specRole = "TANK" end
+    view.specRole = specRole
+    view.isHealer = data.isHealer or specRole == "HEALER" or false
+    view.isTank = data.isTank or specRole == "TANK"
         or (feralBear and (cfg.enemyTankIcon == true or CurrentDisplayMode(cfg, true) == "TANK")) or false
     data = view
     local isHealer = data.isHealer
@@ -1990,6 +3070,7 @@ local function ApplyEnemy(plate, ov, guid, name, unit, cached, liveClass)
     local target = IsTargetPlate(plate, unit) and not isPet
     data.flag = flag
     local shown, question, iconScale, iconKind = ApplySelectedIcon(ov, cfg, true, data, classFile, hasFlag, isPet, target)
+    LogIcon(ov, "enemy", guid, name, cfg, true, classFile, data, iconKind, shown)
     ov._isQuestion = question
     if not shown then
         -- a CC/aura icon still draws when the enemy's own icon is off.
@@ -2114,8 +3195,13 @@ UpdatePlate = function(plate)
         -- "player" by any of: a player-shaped GUID, a class-coloured bar, an
         -- identity we already cached for this GUID, or a plate we already drew as
         -- a player. Anything left is an NPC and gets no icon.
+        -- A stored Class/Spec Memory record is proof too: after a reload the
+        -- cache is empty and GetPlayerInfoByGUID can stay silent for a moment,
+        -- and without this a remembered enemy was hidden before his record was
+        -- ever consulted.
         local provenPlayer = IsPlayerGUID(guid) or liveClass ~= nil
             or (guid ~= nil and (cacheByGUID[guid] ~= nil or ov._playerGUID == guid))
+            or (guid ~= nil and addon.SpecMemory and addon.SpecMemory:Get(guid) ~= nil)
         if not provenPlayer then
             HideOverlay(plate)
             return
@@ -2197,6 +3283,7 @@ end
 local eventFrame = CreateFrame("Frame")
 local events = {
     "COMBAT_LOG_EVENT_UNFILTERED",
+    "PLAYER_LOGIN",
     "PLAYER_TARGET_CHANGED",
     "PLAYER_FOCUS_CHANGED",
     "UPDATE_MOUSEOVER_UNIT",
@@ -2379,10 +3466,12 @@ local function NoteCrowdControl(destGUID, flags, spellID, category, now, refresh
     local stack = ccStackByGUID[destGUID]
     if not stack then
         ccStackCount = ccStackCount + 1
+        stats.ccNew = stats.ccNew + 1
         if ccStackCount > 300 then wipe(ccStackByGUID); wipe(ccByGUID); ccStackCount = 1 end
         stack = {}
         ccStackByGUID[destGUID] = stack
     end
+    stats.cc = stats.cc + 1
     stack[spellID] = entry
     PickCC(destGUID, now)
     return true
@@ -2427,11 +3516,13 @@ local function NoteWhitelistedAura(destGUID, flags, spellID, auraType, now)
         entry.guessed = true
     end
     auraByGUID[destGUID] = entry
+    stats.aura = stats.aura + 1
+    if not old then stats.auraNew = stats.auraNew + 1 end
     return true
 end
 
 -- the CC/aura that ended; the DR timer runs from its removal.
-local function NoteAuraRemoved(destGUID, spellID, spellName, now)
+local function NoteAuraRemoved(destGUID, spellID, spellName, now, auraType)
     local changed = false
     local stack = ccStackByGUID[destGUID]
     if stack and stack[spellID] then
@@ -2441,11 +3532,16 @@ local function NoteAuraRemoved(destGUID, spellID, spellName, now)
     end
     local aura = auraByGUID[destGUID]
     if aura and aura.spellID == spellID then auraByGUID[destGUID] = nil; changed = true end
-    local states = drByGUID[destGUID]
-    if states then
-        local drCat = DRCategory(spellID, addon.GetCrowdControlCategory(spellID, spellName))
-        local s = drCat and states[drCat]
-        if s then s.resetAt = now + DRReset() end
+    -- Only a DEBUFF can be a CC, so only a debuff may re-arm the DR window.
+    -- A BUFF that shares a CC name (Mage Impact) expiring used to push a real
+    -- stun's reset 18 s into the future, making the next stun read half.
+    if auraType ~= "BUFF" then
+        local states = drByGUID[destGUID]
+        if states then
+            local drCat = DRCategory(spellID, addon.GetCrowdControlCategory(spellID, spellName))
+            local s = drCat and states[drCat]
+            if s then s.resetAt = now + DRReset() end
+        end
     end
     return changed
 end
@@ -2461,7 +3557,8 @@ end
 
 -- kept outside the event handler in one table (Lua 5.1 allows 60
 -- upvalues per function; the handler is at that limit).
-local CCEvents = { CrowdControl = NoteCrowdControl, WhitelistedAura = NoteWhitelistedAura, AuraRemoved = NoteAuraRemoved }
+local CCEvents = { CrowdControl = NoteCrowdControl, WhitelistedAura = NoteWhitelistedAura, AuraRemoved = NoteAuraRemoved,
+    FriendlySpec = NoteFriendlySpec, WipeLearnedSpecs = addon.ClearLearnedSpecs }
 function CCEvents.NamesAndDeaths(subEvent, sourceGUID, sourceName, sourceFlags, destGUID, destName, destFlags)
     do
         if addon.HasFlag(destFlags, 0x400) then NoteAuraName(destGUID, destName) end
@@ -2495,9 +3592,10 @@ local auraTrackActive = true
 local function UpdateHibernation()
     local cfg = OPlates and OPlates.db and OPlates.db.profile.nameplates
     enemySpecActive = not cfg or EnemyNeedsSpec(cfg)
-    if not enemySpecActive then
-        wipe(enemySpecByGUID); wipe(enemySpecByName); enemySpecCount = 0
-    end
+    -- Deliberately no wipe here. Turning the enemy icons (or a mode) off used to
+    -- throw the learned enemy specs away, which is one more automatic deletion
+    -- the player never asked for. Detection simply pauses; the store stays and
+    -- resumes the moment the option is back on.
     auraTrackActive = not cfg or SideEnabled(cfg, false) or SideEnabled(cfg, true)
     if not auraTrackActive then
         wipe(ccByGUID); wipe(ccStackByGUID); ccStackCount = 0; wipe(auraByGUID); wipe(drByGUID); drCount = 0
@@ -2507,12 +3605,21 @@ end
 addon.UpdateSpecHibernation = UpdateHibernation
 
 eventFrame:SetScript("OnEvent", function(_, event, ...)
+    -- A session starts at login and at /reload, and both fire PLAYER_LOGIN
+    -- exactly once before the first PLAYER_ENTERING_WORLD. The flag is kept on
+    -- `addon`, not in a local: this handler is already at the 60-upvalue
+    -- ceiling, and one more local stops the file compiling.
+    if event == "PLAYER_LOGIN" then
+        addon._freshSession = true
+        return
+    end
     if event == "COMBAT_LOG_EVENT_UNFILTERED" then
         -- WotLK 3.3.5 fires the classic COMBAT_LOG_EVENT_UNFILTERED payload directly.
         -- read by position; no table allocated per combat-log event.
         local _, subEvent, sourceGUID, sourceName, sourceFlags, destGUID, destName, destFlags, spellID, spellName, _, auraType = ...
         local changed = false
         cleuCount = cleuCount + 1
+        stats.cleu = stats.cleu + 1
         if addon._debugEnabled and cleuCount % 100 == 1 then
             D("CLEU", "#%d sub=%s spell=%s dst=%s dstName=%s dstFlags=%s srcFlags=%s", cleuCount, tostring(subEvent), tostring(spellID), tostring(destGUID), tostring(destName), tostring(destFlags), tostring(sourceFlags))
         end
@@ -2545,7 +3652,11 @@ eventFrame:SetScript("OnEvent", function(_, event, ...)
         -- alone could not protect the first battleground of a session.
         addon._cleuLastAt = now
         addon._cleuRateSeen = addon._cleuRateSeen + 1
-        if now - addon._cleuRateAt >= 10 then
+        -- the very first event of a session used to divide by (now - 0), which
+        -- printed "0.0 events/s over 125487s" in every capture.
+        if addon._cleuRateAt == 0 then
+            addon._cleuRateAt = now
+        elseif now - addon._cleuRateAt >= 10 then
             if addon._debugEnabled then
                 D("CLEU", "rate %.1f events/s over %.0fs (%d events)", addon._cleuRateSeen / (now - addon._cleuRateAt), now - addon._cleuRateAt, addon._cleuRateSeen)
             end
@@ -2567,23 +3678,54 @@ eventFrame:SetScript("OnEvent", function(_, event, ...)
                 unresolvedUntil[sourceGUID] = now + 2
             end
         end
+        -- EFFECT events name the unit that OWNS the effect. src == dst is a
+        -- self-cast, a proc, or a party aura re-sent on its recipient - and a
+        -- self-cast cannot be told from a received buff, so it identifies
+        -- nobody. src ~= dst is a real cast on another unit: the source is the
+        -- caster (a debuff on an enemy, a buff or heal on a party member).
+        local effectEvent = subEvent == "SPELL_AURA_APPLIED" or subEvent == "SPELL_AURA_APPLIED_DOSE"
+            or subEvent == "SPELL_AURA_REFRESH" or subEvent == "SPELL_HEAL"
+            or subEvent == "SPELL_PERIODIC_HEAL" or subEvent == "SPELL_ENERGIZE"
+        local trustedSource = not effectEvent or destGUID ~= sourceGUID
+        -- A shapeshift is logged as an aura on the druid himself, so the gate
+        -- above would drop the one event that proves his form. That gate exists
+        -- because a party aura names its OWNER, not its caster; a form aura is
+        -- different - Moonkin Form can only be worn by the druid who shifted
+        -- into it, so here the destination IS the player and the aura is exact,
+        -- current information about him. Enemies and friendly outsiders only;
+        -- party and raid members are inspected properly.
+        if spellID and addon.SPEC_FORM_SPELLS and addon.SPEC_FORM_SPELLS[spellID]
+            and destGUID == sourceGUID and type(destFlags) == "number"
+            and addon.HasFlag(destFlags, 0x400)
+            and (subEvent == "SPELL_AURA_APPLIED" or subEvent == "SPELL_AURA_REFRESH") then
+            if addon.HasFlag(destFlags, 0x40) and enemySpecActive then
+                if addon.ForcedSpec(spellID, destGUID, destName, spellName, subEvent, destGUID, true) then
+                    changed = true
+                end
+            elseif addon.HasFlag(destFlags, 0x10) and addon.HasFlag(destFlags, 0x8) then
+                if addon.ForcedSpec(spellID, destGUID, destName, spellName, subEvent, destGUID, false) then
+                    changed = true
+                end
+            end
+        end
         -- enemy specs: one table lookup per hostile player spell event.
         -- skipped entirely when no enemy option uses spec/role (hibernation).
-        if enemySpecActive and spellName and SIGNATURE_EVENTS[subEvent] and type(sourceFlags) == "number"
+        if trustedSource and enemySpecActive and spellName and SIGNATURE_EVENTS[subEvent] and type(sourceFlags) == "number"
             and addon.HasFlag(sourceFlags, 0x400) and addon.HasFlag(sourceFlags, 0x40)
-            and NoteEnemySpec(sourceGUID, sourceName, spellName) then
+            and NoteEnemySpec(sourceGUID, sourceName, spellName, spellID, subEvent, destGUID) then
             changed = true
         end
         -- party/raid members' talent spells (affiliation 0x6,
         -- player 0x400) for Healer-in-CC until inspection/comm knows them.
-        if spellName and SIGNATURE_EVENTS[subEvent] and type(sourceFlags) == "number"
+        if trustedSource and spellName and SIGNATURE_EVENTS[subEvent] and type(sourceFlags) == "number"
             and addon.HasFlag(sourceFlags, 0x400)
             and (addon.HasFlag(sourceFlags, 0x2) or addon.HasFlag(sourceFlags, 0x4)) then
             local sig = Signatures()[spellName]
             local old = sig and groupSpecByGUID[sourceGUID]
-            -- same class -> the stronger/equal hint wins; another class only
-            -- when strictly stronger (a shared spell name never flips a class).
-            if sig and (not old or (old.class == sig.class and old.strength <= sig.strength)
+            -- same class -> the deeper tree wins (DeeperSpec); another class
+            -- only when strictly stronger (a shared spell name never flips a
+            -- class).
+            if sig and (not old or (old.class == sig.class and addon.DeeperSpec(sig.strength, old))
                 or (old.class ~= sig.class and sig.strength > old.strength)) then
                 if not old then
                     groupSpecCount = groupSpecCount + 1
@@ -2591,6 +3733,15 @@ eventFrame:SetScript("OnEvent", function(_, event, ...)
                 end
                 groupSpecByGUID[sourceGUID] = sig
             end
+        end
+
+        -- friendly players who are NOT in your group: no unit token on a stock
+        -- client, so the combat log is the only source of a class or a spec.
+        -- Party and raid are inspected properly and never reach this branch.
+        if trustedSource and (spellName or spellID) and SIGNATURE_EVENTS[subEvent] and addon.HasFlag(sourceFlags, 0x400)
+            and addon.HasFlag(sourceFlags, 0x10) and addon.HasFlag(sourceFlags, 0x8)
+            and CCEvents.FriendlySpec(sourceGUID, sourceName, spellName, spellID, subEvent, destGUID) then
+            changed = true
         end
         -- render-only name map (players only, by the combat-log player
         -- flag); a dead/destroyed unit loses its CC/aura icons.
@@ -2602,12 +3753,21 @@ eventFrame:SetScript("OnEvent", function(_, event, ...)
             if (subEvent == "SPELL_AURA_APPLIED" or subEvent == "SPELL_AURA_REFRESH") then
                 if addon.FLAG_AURAS[spellID] then
                     SetFlagCarrier(destGUID, destName, addon.FLAG_AURAS[spellID], addon.GetSpellTexture(spellID))
+                    stats.flags = stats.flags + 1
                     changed = true
                 end
                 -- players and their pets only (estimate + DR, see NoteCrowdControl).
                 -- The combat-log player flag, not the GUID prefix, decides who is a
                 -- player: Warmane players are 0x06/0x07/0x0A, stock cores 0x0000.
-                local category = addon.GetCrowdControlCategory(spellID, spellName)
+                -- A crowd control aura is a DEBUFF on the victim. A BUFF that
+                -- merely shares a CC name is a proc on the caster: Mage Impact
+                -- (64343, "your next Fire Blast stuns...") lands on the mage
+                -- himself and used to draw a stun icon on him - and advance his
+                -- stun DR - for its whole duration. Every real stun/fear/root/
+                -- silence/disarm is a debuff, so excluding BUFFs cannot hide a
+                -- real CC. Anything that is not explicitly a BUFF stays a
+                -- candidate, so a client that omits auraType keeps working.
+                local category = (auraType ~= "BUFF") and addon.GetCrowdControlCategory(spellID, spellName) or nil
                 if addon._debugEnabled and category then
                     D("CCIN", "guid=%s spell=%s cat=%s flags=%s track=%s playerFlag=%s playerGUID=%s pet=%s",
                         tostring(destGUID), tostring(spellID), tostring(category), tostring(destFlags),
@@ -2626,10 +3786,10 @@ eventFrame:SetScript("OnEvent", function(_, event, ...)
                 if addon.FLAG_AURAS[spellID] and ClearFlagCarrier(destGUID) then
                     changed = true
                 end
-                if CCEvents.AuraRemoved(destGUID, spellID, spellName, now) then changed = true end
+                if CCEvents.AuraRemoved(destGUID, spellID, spellName, now, auraType) then changed = true end
             elseif subEvent == "SPELL_AURA_BROKEN" or subEvent == "SPELL_AURA_BROKEN_SPELL" then
                 -- a CC broken by damage/a spell is gone at once.
-                if CCEvents.AuraRemoved(destGUID, spellID, spellName, now) then changed = true end
+                if CCEvents.AuraRemoved(destGUID, spellID, spellName, now, auraType) then changed = true end
             end
         end
         -- the old path refreshed every plate on every frame with combat-log
@@ -2647,7 +3807,22 @@ eventFrame:SetScript("OnEvent", function(_, event, ...)
         wipe(flagCarrierByFaction); wipe(flagNameByGUID); wipe(flagByName)
         -- a new battleground/arena starts with fresh enemy specs (respecs).
         if event == "PLAYER_ENTERING_WORLD" then
-            wipe(enemySpecByGUID); wipe(enemySpecByName); enemySpecCount = 0
+            -- Class/Spec Memory on: learned specs survive a loading screen on
+            -- purpose, which is the whole point of the option.
+            --
+            -- Only the FIRST entering-world of a session is a login or a
+            -- /reload. Every zone change, battleground, arena and dungeon also
+            -- fires this event, and none of them may wipe learned players any
+            -- more: an icon that disappears on every portal is worse than a
+            -- stale one. Off: the login/reload wipe below still applies.
+            if addon._freshSession then
+                addon._freshSession = false
+                if not (addon.SpecMemory and addon.SpecMemory:Enabled()) then
+                    CCEvents.WipeLearnedSpecs()
+                end
+            end
+            -- parse the spell -> class table now, not mid-fight
+            if addon.WarmSpellClasses then addon.WarmSpellClasses() end
             wipe(unresolvedUntil); unresolvedCount = 0
             wipe(groupSpecByGUID); groupSpecCount = 0
             -- pet/guardian render memory starts fresh per world/instance.
@@ -2700,21 +3875,20 @@ eventFrame:SetScript("OnEvent", function(_, event, ...)
         RebuildPetNames(); RememberAllUnits(); QueueKnownPlayerUnits(); RefreshAll(); return
     end
     if event == "PLAYER_TARGET_CHANGED" or event == "PLAYER_FOCUS_CHANGED" then
-        local oldTargetGUID = prevTargetGUID
-        prevTargetGUID = UnitGUID("target")
         RememberUnit("target"); RememberUnit("focus")
         LearnPetUnit("target"); LearnPetUnit("focus")
         if addon.TalentScanner then
             if SpecDetectionNeeded("target") then addon.TalentScanner:InspectNow("target") end
             if SpecDetectionNeeded("focus") then addon.TalentScanner:InspectNow("focus") end
         end
-        -- Force refresh for both old and new target to ensure target highlight updates correctly
-        if oldTargetGUID and oldTargetGUID ~= prevTargetGUID then
-            addon:RequestRefreshNameplateOverlayGUID(oldTargetGUID)
-        end
-        if prevTargetGUID then
-            addon:RequestRefreshNameplateOverlayGUID(prevTargetGUID)
-        end
+        -- ONE pass is enough. RefreshAll() recomputes every visible plate -
+        -- including the old and the new target - and UpdatePlate reads the
+        -- current target itself. Asking for a per-GUID refresh here as well
+        -- did the same work twice, and when the target had no plate (a
+        -- creature, a pet, a player out of view) it retried 20 times over 2 s
+        -- and then fell back to a SECOND full refresh. TargetFollowUp() below
+        -- already redraws the border on the next frame and again 0.15 s later,
+        -- so the old border is cleared and the new one set regardless.
         RefreshAll()
         if event == "PLAYER_TARGET_CHANGED" then TargetFollowUp() end
         return
@@ -2807,3 +3981,127 @@ addon.RefreshNameplateOverlays = function() addon:RequestRefreshNameplateOverlay
 
 
 
+
+---------------------------------------------------------------------------
+-- [STATS] one line every 60 s while debug logging is on
+--
+-- Everything the log can summarise, in one line, for the window that just
+-- ended: plates drawn, every icon kind per side, players seen, each class/spec
+-- store by tier, the Class/Spec Memory, live CC/auras/DR, pets and owners,
+-- flags, druid forms, the active modes and filters, the toggles, and what the
+-- player is currently hovering/targeting. Counters reset when the line prints,
+-- so a capture reads minute by minute instead of line by line.
+---------------------------------------------------------------------------
+function stats.Count(t)
+    local n = 0
+    if type(t) == "table" then for _ in pairs(t) do n = n + 1 end end
+    return n
+end
+
+function stats.CountTrue(t)
+    local n = 0
+    if type(t) == "table" then for _, v in pairs(t) do if v == true then n = n + 1 end end end
+    return n
+end
+
+function stats.Tiers(store)
+    local proven, guess, class = 0, 0, 0
+    for _, e in pairs(store) do
+        if not e.spec then class = class + 1
+        elseif e.weak then guess = guess + 1
+        else proven = proven + 1 end
+    end
+    return proven, guess, class
+end
+
+function stats.Unit(unit)
+    if not UnitExists or not UnitExists(unit) then return "-" end
+    if UnitIsPlayer and UnitIsPlayer(unit) then return "PLAYER" end
+    if UnitIsDeadOrGhost and UnitIsDeadOrGhost(unit) then return "DEAD" end
+    return "NPC"
+end
+
+function stats.Emit()
+    local cfg = DB()
+    local now = GetTime()
+    local window = stats.at > 0 and (now - stats.at) or stats.every
+    if window <= 0 then window = 1 end
+    local plates_, drawn, noicon, drawnF, drawnE = 0, 0, 0, 0, 0
+    for _, ov in pairs(plates) do
+        plates_ = plates_ + 1
+        if ov:IsShown() then
+            if ov.icon and ov.icon:IsShown() then
+                drawn = drawn + 1
+                if ov._iconSide == "enemy" then drawnE = drawnE + 1 else drawnF = drawnF + 1 end
+            else
+                noicon = noicon + 1
+            end
+        end
+    end
+    local fP, fG, fC = stats.Tiers(friendlySpecByGUID)
+    local eP, eG, eC = stats.Tiers(enemySpecByGUID)
+    local mem = addon.SpecMemory
+    local memCount = mem and mem:Count() or 0
+    local memClass = mem and mem.CountClassOnly and mem:CountClassOnly() or 0
+    local owners, ownerSeen = 0, {}
+    for _, cls in pairs(petOwnerClassByGUID) do
+        if cls and not ownerSeen[cls] then ownerSeen[cls] = true; owners = owners + 1 end
+    end
+    local f, e = stats.icons.friendly, stats.icons.enemy
+    local p = {}
+    p[#p + 1] = string.format("t=%.0f up=%.0fs", now, now - (addon._sessionStartedAt or now))
+    p[#p + 1] = string.format("cleu=%d (%.1f/s)", stats.cleu, stats.cleu / window)
+    p[#p + 1] = string.format("plates=%d drawn=%d (F%d/E%d) noicon=%d", plates_, drawn, drawnF, drawnE, noicon)
+    p[#p + 1] = string.format("icons F c%d s%d h%d t%d u%d p%d f%d", f.CLASS or 0, f.SPEC or 0,
+        f.HEALER or 0, f.TANK or 0, f.UNKNOWN or 0, f.PET or 0, f.FLAG or 0)
+    p[#p + 1] = string.format("E c%d s%d h%d t%d u%d p%d f%d", e.CLASS or 0, e.SPEC or 0,
+        e.HEALER or 0, e.TANK or 0, e.UNKNOWN or 0, e.PET or 0, e.FLAG or 0)
+    p[#p + 1] = string.format("seen F=%d E=%d", stats.seenCountF, stats.seenCountE)
+    p[#p + 1] = string.format("store F p%d g%d c%d | E p%d g%d c%d", fP, fG, fC, eP, eG, eC)
+    local memOn = mem and mem:Enabled()
+    p[#p + 1] = string.format("mem=%d classonly=%d on=%s%s", memCount, memClass,
+        tostring(memOn), (mem and not memOn and memCount > 0) and " (kept)" or "")
+    p[#p + 1] = string.format("cc live=%d new=%d seen=%d", stats.Count(ccByGUID), stats.ccNew, stats.cc)
+    p[#p + 1] = string.format("aura live=%d new=%d seen=%d", stats.Count(auraByGUID), stats.auraNew, stats.aura)
+    p[#p + 1] = string.format("dr=%d pets=%d owners=%d flags=%d", stats.Count(drByGUID),
+        stats.Count(petOwnerClassByGUID), owners, stats.Count(flagIconByGUID))
+    p[#p + 1] = string.format("forms bear=%d cat=%d", stats.forms.BEAR or 0, stats.forms.CAT or 0)
+    p[#p + 1] = string.format("spec hybrid kept=%d moved=%d", stats.hybridKept, stats.hybridMoved)
+    p[#p + 1] = string.format("mode F=%s E=%s", tostring(CurrentDisplayMode(cfg, false)),
+        tostring(CurrentDisplayMode(cfg, true)))
+    p[#p + 1] = string.format("filter F c%d s%d | E c%d s%d",
+        stats.CountTrue(cfg.classFilter), stats.CountTrue(cfg.specFilter),
+        stats.CountTrue(cfg.enemyClassFilter), stats.CountTrue(cfg.enemySpecFilter))
+    p[#p + 1] = string.format("toggles guess=%s mem=%s", tostring(cfg.weakSpecSignals == true),
+        tostring(cfg.persistentTalentCache == true))
+    p[#p + 1] = string.format("hover=%s target=%s", stats.Unit("mouseover"), stats.Unit("target"))
+    D("STATS", "%s", table.concat(p, " | "))
+    -- reset the window
+    stats.at = now
+    stats.cleu, stats.cc, stats.ccNew = 0, 0, 0
+    stats.aura, stats.auraNew, stats.flags = 0, 0, 0
+    stats.seenCountF, stats.seenCountE = 0, 0
+    wipe(stats.seenF); wipe(stats.seenE)
+    wipe(stats.icons.friendly); wipe(stats.icons.enemy)
+    stats.forms.BEAR, stats.forms.CAT = 0, 0
+    stats.hybridKept, stats.hybridMoved = 0, 0
+end
+addon.PrintStats = stats.Emit
+
+stats.frame = CreateFrame("Frame")
+stats.frame:Hide()
+stats.frame:SetScript("OnUpdate", function(_, elapsed)
+    local now = GetTime()
+    if stats.at == 0 then stats.at = now; return end
+    if now - stats.at >= stats.every then stats.Emit() end
+end)
+-- shown only while debug logging is on: a normal player pays nothing.
+addon.OnDebugChanged = function(on)
+    if on then
+        stats.at = GetTime()
+        stats.frame:Show()
+    else
+        stats.frame:Hide()
+    end
+end
+if addon._debugEnabled then addon.OnDebugChanged(true) end

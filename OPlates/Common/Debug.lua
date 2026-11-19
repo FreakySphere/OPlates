@@ -45,4 +45,7 @@ function addon:SetDebug(on, reason)
         self._debugEnabled = false
     end
     if OPlates and OPlates.NotifyOptions then OPlates:NotifyOptions() end
+    -- the [STATS] ticker only runs while logging is on (it is a hidden frame,
+    -- so there is no per-frame cost for a normal player).
+    if addon.OnDebugChanged then addon.OnDebugChanged(on) end
 end

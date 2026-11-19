@@ -60,9 +60,9 @@ local defaults = {
             friendlyDisplayMode = "ALL",
             enemyDisplayMode = "ALL",
             classIconSize = 1.0,
-            healerIconSize = 1.35,
-            flagCarrierIconSize = 1.5,
-            petIconSize = 0.8,
+            healerIconSize = 1.5,
+            flagCarrierIconSize = 2.0,
+            petIconSize = 0.5,
             classIconHorizontalOffset = 0,
             classIconOffset = -3,
             useHealerIcon = true,
@@ -71,10 +71,11 @@ local defaults = {
             persistentTalentCache = false,
             useAwesomeWotlkNameplateUnits = false,
             showClassIcon = true,
-            showUnknownFriendly = true,
+            showUnknownFriendly = false,
             classToSpecDelay = 1.0,
             classToSpecDelayEnabled = true,
             drResetSeconds = 18.1,
+            weakSpecSignals = false,
             petIconsEnabled = true,
             useFlagCarrierIcon = true,
             enemyFlagCarrierIcon = true,
@@ -83,9 +84,9 @@ local defaults = {
             enemyTankIcon = true,
             enemyShowSpec = true,
             enemyShowClass = true,
-            enemyShowUnknown = true,
+            enemyShowUnknown = false,
             showPlayerName = true,
-            enemyShowPlayerName = true,
+            enemyShowPlayerName = false,
             showNameWithoutIcon = false,
             enemyShowNameWithoutIcon = false,
             showCrowdControl = true,
@@ -110,10 +111,10 @@ local defaults = {
             arenaNumbersEnabled = true,
             enemyIconScale = 100,
             enemyIconOffsetX = 0,
-            enemyIconOffsetY = 0,
-            enemyHealerIconSize = 1.35,
-            enemyPetIconSize = 0.8,
-            enemyFlagCarrierIconSize = 1.5,
+            enemyIconOffsetY = 11,
+            enemyHealerIconSize = 1.5,
+            enemyPetIconSize = 0.5,
+            enemyFlagCarrierIconSize = 2.0,
             -- per-side class/spec filters. Only DISABLED entries are stored
             -- (an empty table means every class/spec is shown). Class keys are the
             -- class file ("ROGUE"); spec keys are "CLASS:SPEC" ("ROGUE:COMBAT").
@@ -125,9 +126,9 @@ local defaults = {
         misc = {
             healerInCrowdControl = true,
             healerInCrowdControlSound = true,
-            healerInCrowdControlSize = 48,
-            healerInCrowdControlOffsetX = 0,
-            healerInCrowdControlOffsetY = 250,
+            healerInCrowdControlSize = 65,
+            healerInCrowdControlOffsetX = 400,
+            healerInCrowdControlOffsetY = 115,
             healerInCrowdControlInArena = true,
             healerInCrowdControlInBG = true,
             healerInCrowdControlInPVE = true,
@@ -279,6 +280,9 @@ addon.MigrateProfile = function(profile)
             misc.healerInCrowdControlUseCustomTimer = false
         end
     end
+    -- an identity-icon-less side must not keep a question mark (see
+    -- addon.UnknownIconLocked): uncheck it for old profiles too
+    if np and addon.SanitizeUnknownIcons then addon.SanitizeUnknownIcons(np) end
 end
 
 function OPlates:OnInitialize()
@@ -319,6 +323,7 @@ function OPlates:OnInitialize()
     self.db.RegisterCallback(self, "OnProfileReset", "RefreshConfig")
 
     if addon.TalentScanner then addon.TalentScanner:Initialize() end
+    if addon.SpecMemory then addon.SpecMemory:Initialize() end
     self:SetupNameplateOverlays()
     self:SetupHealerInCrowdControl()
 end
